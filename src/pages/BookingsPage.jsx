@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useNavigate } from 'react-router-dom'
 import { ALLERGENS, BOOKING_TIMES, BOOKING_STATUSES, STATUS_COLOURS } from '../lib/constants'
 import { sendBookingConfirmation } from '../lib/email'
+import { sanitizeName, sanitizePhone, sanitizeText, isValidEmail, sanitizePartySize } from '../lib/sanitize'
 import Modal from '../components/ui/Modal'
 import Spinner from '../components/ui/Spinner'
 import { format } from 'date-fns'
@@ -183,25 +184,46 @@ function BookingForm({ booking, onClose, onSaved }) {
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const lastSubmit = useRef(0)
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }))
 
   const handleSave = async () => {
-    if (!form.name.trim() || !form.date || !form.time) return setError('Name, date and time are required')
+    // Rate limit: 1 submission per 5 seconds
+    if (Date.now() - lastSubmit.current < 5000) return setError('Please wait a moment before submitting again')
+    lastSubmit.current = Date.now()
+
+    // Validate
+    const name = sanitizeName(form.name)
+    if (!name) return setError('Guest name is required')
+    if (!form.date || !form.time) return setError('Date and time are required')
+    if (form.email && !isValidEmail(form.email)) return setError('Invalid email address')
+
     setSaving(true)
     setError('')
     try {
+      const clean = {
+        ...form,
+        name,
+        email: form.email?.trim().toLowerCase().slice(0, 254) || null,
+        phone: sanitizePhone(form.phone) || null,
+        dietary_notes: sanitizeText(form.dietary_notes, 500),
+        special_requests: sanitizeText(form.special_requests, 1000),
+        notes: sanitizeText(form.notes, 1000),
+        table_preference: sanitizeText(form.table_preference, 100),
+        party_size: sanitizePartySize(form.party_size),
+      }
       if (isEdit) {
-        const { error: err } = await supabase.from('bookings').update(form).eq('id', booking.id)
+        const { error: err } = await supabase.from('bookings').update(clean).eq('id', booking.id)
         if (err) throw err
       } else {
-        const { error: err } = await supabase.from('bookings').insert(form)
+        const { error: err } = await supabase.from('bookings').insert(clean)
         if (err) throw err
-        if (form.email) await sendBookingConfirmation(form)
+        if (clean.email) await sendBookingConfirmation(clean)
       }
       onSaved()
-    } catch (e) {
-      setError(e.message)
+    } catch {
+      setError('Failed to save booking — please try again')
       setSaving(false)
     }
   }
@@ -273,6 +295,14 @@ function BookingForm({ booking, onClose, onSaved }) {
           <CheckboxField label="SMS Marketing" checked={form.marketing_sms} onChange={v => set('marketing_sms', v)} />
           <CheckboxField label="Phone Marketing" checked={form.marketing_phone} onChange={v => set('marketing_phone', v)} />
         </div>
+
+        {/* Privacy notice — GDPR requirement for data collection */}
+        {!isEdit && (
+          <div className="bg-zinc-700/50 rounded-xl px-4 py-3 text-xs font-barlow text-zinc-400">
+            <p className="font-semibold text-zinc-300 mb-1">Privacy Notice</p>
+            <p>We collect your name, contact details and dining preferences to manage your reservation and provide the service you've requested. Your data is stored securely and will not be shared with third parties without your consent. Marketing communications are only sent if you opt in below. You have the right to access, correct or erase your data at any time by contacting the venue.</p>
+          </div>
+        )}
 
         {error && <p className="text-red-400 font-barlow text-sm">{error}</p>}
 

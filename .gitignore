@@ -1,4 +1,14 @@
+# Environment — NEVER commit these
 .env
 .env.local
+.env.*.local
+.env.production
+
+# Dependencies
 node_modules/
 dist/
+
+# Editor / OS
+.DS_Store
+*.log
+

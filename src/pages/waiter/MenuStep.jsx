@@ -1,7 +1,8 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useApp } from '../../context/AppContext'
 import { ALLERGENS, DRINK_SUBCATEGORIES } from '../../lib/constants'
+import { sanitizeText, sanitizeAllergens, validateOrderItems } from '../../lib/sanitize'
 import { printTicket } from '../../lib/printer'
 import Modal from '../../components/ui/Modal'
 import Spinner from '../../components/ui/Spinner'
@@ -18,8 +19,9 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
   const [success, setSuccess] = useState(false)
   const [showCart, setShowCart] = useState(false)
   // Modifier selection modal
-  const [modifierItem, setModifierItem] = useState(null) // item awaiting modifier selection
-  const [selectedMods, setSelectedMods] = useState([]) // selected modifier ids for current item
+  const [modifierItem, setModifierItem] = useState(null)
+  const [selectedMods, setSelectedMods] = useState([])
+  const lastSubmit = useRef(0)
 
   const menuItems = settings?.menu_items || []
   const happyHour = settings?.happy_hour
@@ -85,12 +87,29 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
 
   const handleSubmit = async () => {
     if (cart.length === 0) return
+    // Rate limit: prevent double-submit within 10 seconds
+    if (Date.now() - lastSubmit.current < 10000) {
+      alert('Order already sent — please wait before submitting again')
+      return
+    }
+    lastSubmit.current = Date.now()
+
+    // Validate cart items are still in the menu (prevents tampered/stale items)
+    const { ok, unknown } = validateOrderItems(cart, menuItems)
+    if (!ok) {
+      alert(`Some items are no longer available: ${unknown.join(', ')}`)
+      return
+    }
+
     setSubmitting(true)
 
     const foodItems = cart.filter(i => i.type === 'food')
     const drinkItems = cart.filter(i => i.type === 'drink')
 
     try {
+      const cleanNote = sanitizeText(note, 500)
+      const cleanAllergens = sanitizeAllergens(checklist.allergens || [])
+
       const { data: order, error } = await supabase.from('orders').insert({
         table_number: table.number,
         items: cart.map(i => ({
@@ -100,13 +119,13 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
           price: i.price + (i.selectedMods || []).reduce((s, m) => s + (m.price || 0), 0),
           qty: i.qty,
         })),
-        note,
+        note: cleanNote,
         total: cartTotal,
         status: 'pending',
         tab_closed: false,
         id_checked: checklist.idChecked,
         allergy_checked: checklist.allergyChecked,
-        allergens: checklist.allergens,
+        allergens: cleanAllergens,
         staff_name: staff.name,
         staff_colour: staff.colour,
         ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}),

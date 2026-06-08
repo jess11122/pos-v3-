@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useApp } from '../../context/AppContext'
 import { DRINK_SUBCATEGORIES } from '../../lib/constants'
+import { verifyPin, hashPin } from '../../lib/pin'
 import Spinner from '../../components/ui/Spinner'
 
 export default function SettingsAdmin() {
@@ -36,14 +37,20 @@ export default function SettingsAdmin() {
   }
 
   const savePin = async () => {
-    if (currentPin !== settings?.admin_pin) return flash(setPinMsg, 'Current PIN is incorrect')
     if (newPin.length < 4) return flash(setPinMsg, 'New PIN must be at least 4 digits')
     if (newPin !== confirmPin) return flash(setPinMsg, 'PINs do not match')
+    // Verify current PIN against stored hash or plaintext
+    const storedHash = settings?.admin_pin_hash
+    const storedPlain = settings?.admin_pin || '1234'
+    const ok = await verifyPin(currentPin, storedHash || storedPlain)
+    if (!ok) return flash(setPinMsg, 'Current PIN is incorrect')
     setPinSaving(true)
-    await supabase.from('settings').update({ admin_pin: newPin }).eq('id', settings.id)
+    const newHash = await hashPin(newPin)
+    // Store hash; keep plain for legacy compat during transition
+    await supabase.from('settings').update({ admin_pin_hash: newHash, admin_pin: newPin }).eq('id', settings.id)
     await refreshSettings()
     setCurrentPin(''); setNewPin(''); setConfirmPin('')
-    flash(setPinMsg, '✓ PIN updated')
+    flash(setPinMsg, '✓ PIN updated and secured')
     setPinSaving(false)
   }
 
