@@ -8,9 +8,11 @@ import Spinner from '../components/ui/Spinner'
 import Modal from '../components/ui/Modal'
 import { formatDistanceToNow } from 'date-fns'
 
+const VOID_REASONS = ['Customer changed mind', 'Wrong item ordered', 'Unavailable / 86\'d', 'Spilled / spoiled', 'Manager comp', 'Other']
+
 export default function TablesPage() {
   const navigate = useNavigate()
-  const { settings } = useApp()
+  const { settings, selectedStaff, currentVenue } = useApp()
   const [tables, setTables] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedTable, setSelectedTable] = useState(null)
@@ -18,6 +20,8 @@ export default function TablesPage() {
   const [customTip, setCustomTip] = useState('')
   const [processing, setProcessing] = useState(false)
   const [staffName, setStaffName] = useState('')
+  const [showVoid, setShowVoid] = useState(false)
+  const [showSplit, setShowSplit] = useState(false)
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -28,11 +32,10 @@ export default function TablesPage() {
   const todayStart = () => new Date().toISOString().split('T')[0] + 'T00:00:00'
 
   const loadTables = useCallback(async () => {
-    // FIX: add date filter so we only fetch today's open tabs
     const [ordersRes, routedRes] = await Promise.all([
       supabase
         .from('orders')
-        .select('id,table_number,total,status,created_at,staff_name,staff_colour,items,allergens,note')
+        .select('id,table_number,total,status,created_at,staff_name,staff_colour,items,allergens,note,voided_amount')
         .eq('tab_closed', false)
         .eq('status', 'pending')
         .gte('created_at', todayStart())
@@ -63,7 +66,6 @@ export default function TablesPage() {
       grouped[o.table_number].orders.push(o)
     }
 
-    // FIX: build order-id → table-number lookup to avoid O(n*m) nested loop
     const orderToTable = {}
     for (const t of Object.values(grouped)) {
       for (const o of t.orders) orderToTable[o.id] = t.tableNumber
@@ -93,7 +95,10 @@ export default function TablesPage() {
     setCustomTip('')
   }
 
-  const totalAmount = selectedTable ? selectedTable.orders.reduce((s, o) => s + (o.total || 0), 0) : 0
+  // Subtract voided amounts from totals
+  const totalAmount = selectedTable
+    ? selectedTable.orders.reduce((s, o) => s + (o.total || 0) - (o.voided_amount || 0), 0)
+    : 0
   const tipAmount = parseFloat(tip || customTip || 0)
   const grandTotal = totalAmount + tipAmount
 
@@ -108,7 +113,13 @@ export default function TablesPage() {
       }).in('id', orderIds)
       await supabase.from('order_items_routed').update({ status: 'complete' }).in('order_id', orderIds)
       if (tipAmount > 0) {
-        await supabase.from('tips').insert({ table_number: selectedTable.tableNumber, staff_name: staffName, amount: tipAmount, payment_method: method })
+        await supabase.from('tips').insert({
+          table_number: selectedTable.tableNumber,
+          staff_name: staffName,
+          amount: tipAmount,
+          payment_method: method,
+          ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}),
+        })
       }
       if (method === 'cash') await openCashDrawer()
       setSelectedTable(null)
@@ -121,7 +132,7 @@ export default function TablesPage() {
   }
 
   const allItems = selectedTable
-    ? selectedTable.orders.flatMap(o => (o.items || []).map(i => ({ ...i, note: o.note, allergens: o.allergens })))
+    ? selectedTable.orders.flatMap(o => (o.items || []).map(i => ({ ...i, orderId: o.id, note: o.note, allergens: o.allergens })))
     : []
   const mergedItems = allItems.reduce((acc, item) => {
     const existing = acc.find(x => x.name === item.name)
@@ -157,7 +168,7 @@ export default function TablesPage() {
         )}
       </div>
 
-      {selectedTable && (
+      {selectedTable && !showVoid && !showSplit && (
         <Modal title={`Table ${selectedTable.tableNumber}`} onClose={() => setSelectedTable(null)} size="lg">
           <div className="space-y-4">
             <div className="flex items-center justify-between">
@@ -179,6 +190,12 @@ export default function TablesPage() {
                   <span>£{((item.price || 0) * item.qty).toFixed(2)}</span>
                 </div>
               ))}
+              {selectedTable.orders.some(o => (o.voided_amount || 0) > 0) && (
+                <div className="flex justify-between font-barlow text-red-400 text-sm border-t border-zinc-600 pt-2">
+                  <span>Voids</span>
+                  <span>−£{selectedTable.orders.reduce((s, o) => s + (o.voided_amount || 0), 0).toFixed(2)}</span>
+                </div>
+              )}
               <div className="border-t border-zinc-600 pt-2 flex justify-between">
                 <span className="font-oswald text-white">Subtotal</span>
                 <span className="font-oswald text-white">£{totalAmount.toFixed(2)}</span>
@@ -192,6 +209,16 @@ export default function TablesPage() {
                 </p>
               </div>
             )}
+
+            {/* Void + Split actions */}
+            <div className="flex gap-2">
+              <button onClick={() => setShowVoid(true)} className="flex-1 bg-red-900/50 hover:bg-red-900 border border-red-800 text-red-400 font-barlow text-sm py-2.5 rounded-xl transition-colors">
+                Void Item
+              </button>
+              <button onClick={() => setShowSplit(true)} className="flex-1 bg-blue-900/50 hover:bg-blue-900 border border-blue-800 text-blue-400 font-barlow text-sm py-2.5 rounded-xl transition-colors">
+                Split Bill
+              </button>
+            </div>
 
             <div>
               <label className="font-barlow text-zinc-300 text-base block mb-2">Add Tip (optional)</label>
@@ -231,12 +258,233 @@ export default function TablesPage() {
           </div>
         </Modal>
       )}
+
+      {showVoid && selectedTable && (
+        <VoidModal
+          table={selectedTable}
+          staffName={selectedStaff?.name || staffName}
+          currentVenue={currentVenue}
+          onClose={() => setShowVoid(false)}
+          onVoided={() => { setShowVoid(false); loadTables(); setSelectedTable(null) }}
+        />
+      )}
+
+      {showSplit && selectedTable && (
+        <SplitBillModal
+          table={selectedTable}
+          totalAmount={totalAmount}
+          currentVenue={currentVenue}
+          onClose={() => setShowSplit(false)}
+          onPaid={() => { setShowSplit(false); loadTables(); setSelectedTable(null) }}
+        />
+      )}
     </div>
   )
 }
 
+function VoidModal({ table, staffName, currentVenue, onClose, onVoided }) {
+  const allItems = table.orders.flatMap(o =>
+    (o.items || []).map(i => ({ ...i, orderId: o.id, qty: i.qty || 1 }))
+  )
+  const [selectedItem, setSelectedItem] = useState(null)
+  const [reason, setReason] = useState(VOID_REASONS[0])
+  const [saving, setSaving] = useState(false)
+
+  const handleVoid = async () => {
+    if (!selectedItem) return
+    setSaving(true)
+    try {
+      const amount = (selectedItem.price || 0) * selectedItem.qty
+      await supabase.from('voids').insert({
+        order_id: selectedItem.orderId,
+        item_name: selectedItem.name,
+        quantity: selectedItem.qty,
+        amount,
+        reason,
+        voided_by: staffName || 'Manager',
+        ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}),
+      })
+      // Deduct from order total
+      const order = table.orders.find(o => o.id === selectedItem.orderId)
+      if (order) {
+        const newVoided = (order.voided_amount || 0) + amount
+        await supabase.from('orders').update({ voided_amount: newVoided }).eq('id', order.id)
+      }
+      onVoided()
+    } catch (e) {
+      alert('Void failed: ' + e.message)
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title="Void Item" onClose={onClose} size="md">
+      <div className="space-y-4">
+        <p className="font-barlow text-zinc-400 text-sm">Select the item to void from Table {table.tableNumber}:</p>
+        <div className="space-y-2 max-h-52 overflow-y-auto">
+          {allItems.map((item, i) => (
+            <button
+              key={i}
+              onClick={() => setSelectedItem(item)}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl font-barlow text-base transition-colors ${selectedItem === item ? 'bg-red-700 text-white' : 'bg-zinc-700 text-white hover:bg-zinc-600'}`}
+            >
+              <span>{item.qty}× {item.name}</span>
+              <span className="text-sm opacity-75">£{((item.price || 0) * item.qty).toFixed(2)}</span>
+            </button>
+          ))}
+        </div>
+        <div>
+          <label className="label">Reason</label>
+          <select value={reason} onChange={e => setReason(e.target.value)} className="input-field w-full">
+            {VOID_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </div>
+        {selectedItem && (
+          <div className="bg-red-900/30 border border-red-800 rounded-xl px-4 py-3">
+            <p className="font-barlow text-red-400 text-sm">
+              Void {selectedItem.qty}× {selectedItem.name} — £{((selectedItem.price || 0) * selectedItem.qty).toFixed(2)}
+            </p>
+          </div>
+        )}
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 bg-zinc-700 hover:bg-zinc-600 text-white font-oswald py-3 rounded-xl transition-colors">Cancel</button>
+          <button
+            onClick={handleVoid}
+            disabled={!selectedItem || saving}
+            className="flex-1 bg-red-700 hover:bg-red-800 disabled:opacity-50 text-white font-oswald py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+          >
+            {saving ? <Spinner size="sm" color="white" /> : 'Confirm Void'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function SplitBillModal({ table, totalAmount, currentVenue, onClose, onPaid }) {
+  const [splits, setSplits] = useState(2)
+  const [paidCount, setPaidCount] = useState(0)
+  const [method, setMethod] = useState('card')
+  const [paying, setPaying] = useState(false)
+  const [tip, setTip] = useState(0)
+
+  const perPersonBase = totalAmount / splits
+  const perPersonTip = tip / splits
+  const perPerson = perPersonBase + perPersonTip
+  const remaining = splits - paidCount
+
+  const payNext = async () => {
+    setPaying(true)
+    try {
+      await supabase.from('payments').insert({
+        table_number: table.tableNumber,
+        amount: perPersonBase,
+        tip: perPersonTip,
+        method,
+        split_index: paidCount + 1,
+        split_total: splits,
+        staff_name: table.staffName,
+        order_ids: table.orders.map(o => o.id),
+        ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}),
+      })
+      const newPaid = paidCount + 1
+      setPaidCount(newPaid)
+      if (method === 'cash') await openCashDrawer()
+      if (newPaid >= splits) {
+        // All splits paid — close tab
+        const orderIds = table.orders.map(o => o.id)
+        await supabase.from('orders').update({ status: 'complete', tab_closed: true, completed_at: new Date().toISOString(), payment_method: 'split' }).in('id', orderIds)
+        await supabase.from('order_items_routed').update({ status: 'complete' }).in('order_id', orderIds)
+        if (tip > 0) {
+          await supabase.from('tips').insert({ table_number: table.tableNumber, staff_name: table.staffName, amount: tip, payment_method: 'split', ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}) })
+        }
+        onPaid()
+      }
+    } catch (e) {
+      alert('Payment failed: ' + e.message)
+    } finally {
+      setPaying(false)
+    }
+  }
+
+  return (
+    <Modal title="Split Bill" onClose={onClose} size="md">
+      <div className="space-y-4">
+        <div className="bg-zinc-700 rounded-xl px-4 py-3 flex justify-between">
+          <span className="font-barlow text-zinc-300">Table {table.tableNumber} total</span>
+          <span className="font-oswald text-amber-500">£{totalAmount.toFixed(2)}</span>
+        </div>
+
+        <div>
+          <label className="label">Split between how many people?</label>
+          <div className="flex gap-2 flex-wrap mt-1">
+            {[2, 3, 4, 5, 6].map(n => (
+              <button key={n} onClick={() => { setSplits(n); setPaidCount(0) }}
+                className={`w-12 h-12 rounded-xl font-oswald text-lg transition-colors ${splits === n ? 'bg-amber-600 text-white' : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'}`}>
+                {n}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="label">Tip (total, optional)</label>
+          <div className="flex gap-2 flex-wrap">
+            {[0, 2, 5, 10].map(t => (
+              <button key={t} onClick={() => setTip(t)}
+                className={`px-4 py-2 rounded-xl font-barlow text-sm transition-colors ${tip === t ? 'bg-amber-600 text-white' : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'}`}>
+                {t === 0 ? 'No tip' : `£${t}`}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="label">Payment method for next person</label>
+          <div className="flex gap-2">
+            {['card', 'cash'].map(m => (
+              <button key={m} onClick={() => setMethod(m)}
+                className={`flex-1 py-3 rounded-xl font-oswald text-lg transition-colors ${method === m ? 'bg-amber-600 text-white' : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'}`}>
+                {m === 'cash' ? '💵 Cash' : '💳 Card'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Progress */}
+        {paidCount > 0 && (
+          <div className="bg-green-900/30 border border-green-800 rounded-xl px-4 py-3">
+            <p className="font-barlow text-green-400 text-sm">{paidCount} of {splits} paid · {remaining} remaining</p>
+            <div className="mt-2 h-2 bg-zinc-700 rounded-full overflow-hidden">
+              <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: `${(paidCount / splits) * 100}%` }} />
+            </div>
+          </div>
+        )}
+
+        <div className="bg-amber-600/10 border border-amber-600/40 rounded-xl px-4 py-3">
+          <div className="flex justify-between font-barlow">
+            <span className="text-zinc-300">Person {paidCount + 1} of {splits} pays</span>
+            <span className="text-amber-400 font-semibold text-lg">£{perPerson.toFixed(2)}</span>
+          </div>
+        </div>
+
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 bg-zinc-700 hover:bg-zinc-600 text-white font-oswald py-3 rounded-xl transition-colors">Cancel</button>
+          <button
+            onClick={payNext}
+            disabled={paying}
+            className="flex-1 bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white font-oswald py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+          >
+            {paying ? <Spinner size="sm" color="white" /> : `Collect £${perPerson.toFixed(2)}`}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 function TableCard({ table, onClick }) {
-  const total = table.orders.reduce((s, o) => s + (o.total || 0), 0)
+  const total = table.orders.reduce((s, o) => s + (o.total || 0) - (o.voided_amount || 0), 0)
   const itemCount = table.orders.reduce((s, o) => s + (o.items?.length || 0), 0)
   return (
     <button onClick={onClick} className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-zinc-500 rounded-2xl p-5 text-left transition-all active:scale-95 w-full">
@@ -259,4 +507,3 @@ function TableCard({ table, onClick }) {
     </button>
   )
 }
-

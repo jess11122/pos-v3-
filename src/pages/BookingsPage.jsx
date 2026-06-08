@@ -5,7 +5,15 @@ import { ALLERGENS, BOOKING_TIMES, BOOKING_STATUSES, STATUS_COLOURS } from '../l
 import { sendBookingConfirmation } from '../lib/email'
 import Modal from '../components/ui/Modal'
 import Spinner from '../components/ui/Spinner'
-import { format, parseISO } from 'date-fns'
+import { format } from 'date-fns'
+
+async function sendSMSReminder(bookingId) {
+  const { data, error } = await supabase.functions.invoke('send-booking-reminder', {
+    body: { booking_id: bookingId },
+  })
+  if (error || data?.error) throw new Error(error?.message || data?.error)
+  return data
+}
 
 const OCCASIONS = ['Birthday', 'Anniversary', 'Business Lunch', 'Date Night', 'Hen/Stag', 'Other', '']
 
@@ -102,6 +110,21 @@ export default function BookingsPage() {
 
 function BookingCard({ booking, onEdit, onStatusChange }) {
   const statusColour = STATUS_COLOURS[booking.status] || 'bg-zinc-600'
+  const [smsState, setSmsState] = useState('idle') // idle | sending | sent | error
+
+  const handleSMSReminder = async () => {
+    if (!booking.phone) return alert('No phone number on this booking')
+    setSmsState('sending')
+    try {
+      await sendSMSReminder(booking.id)
+      setSmsState('sent')
+      setTimeout(() => setSmsState('idle'), 3000)
+    } catch (e) {
+      alert('SMS failed: ' + e.message)
+      setSmsState('idle')
+    }
+  }
+
   return (
     <div className="bg-zinc-800 rounded-2xl p-4">
       <div className="flex items-start justify-between mb-2">
@@ -135,6 +158,15 @@ function BookingCard({ booking, onEdit, onStatusChange }) {
           </button>
         ))}
         <button onClick={onEdit} className="px-3 py-1.5 rounded-lg font-barlow text-sm bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors">Edit</button>
+        {booking.phone && (
+          <button
+            onClick={handleSMSReminder}
+            disabled={smsState !== 'idle'}
+            className={`px-3 py-1.5 rounded-lg font-barlow text-sm transition-colors disabled:opacity-60 ${smsState === 'sent' ? 'bg-green-800 text-green-300' : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'}`}
+          >
+            {smsState === 'sending' ? '⏳ Sending…' : smsState === 'sent' ? '✓ SMS Sent' : '📱 SMS Reminder'}
+          </button>
+        )}
       </div>
     </div>
   )

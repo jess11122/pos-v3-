@@ -12,14 +12,17 @@ export default function MenuAdmin() {
   const [editItem, setEditItem] = useState(null)
   const [showNew, setShowNew] = useState(false)
   const [filter, setFilter] = useState('all')
+  const [view, setView] = useState('all') // 'all' | '86'
 
   const menuItems = settings?.menu_items || []
-  const filtered = filter === 'all' ? menuItems : menuItems.filter(i => i.type === filter)
+  const filtered = view === '86'
+    ? menuItems.filter(i => !i.active)
+    : filter === 'all' ? menuItems : menuItems.filter(i => i.type === filter)
 
-  const saveItems = async (items) => {
+  const saveItems = useCallback(async (items) => {
     await supabase.from('settings').update({ menu_items: items }).eq('id', settings.id)
     await refreshSettings()
-  }
+  }, [settings?.id, refreshSettings])
 
   const handleSave = async (item) => {
     const items = editItem
@@ -39,6 +42,11 @@ export default function MenuAdmin() {
     await saveItems(menuItems.map(i => i.id === id ? { ...i, active: !i.active } : i))
   }
 
+  // Quick "86 all" / "bring back all" helpers
+  const enable86 = async (id) => {
+    await saveItems(menuItems.map(i => i.id === id ? { ...i, active: false } : i))
+  }
+
   return (
     <div className="p-5 max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-4">
@@ -46,29 +54,50 @@ export default function MenuAdmin() {
         <button onClick={() => setShowNew(true)} className="bg-amber-600 hover:bg-amber-700 text-white font-oswald px-4 py-2 rounded-xl transition-colors">+ Add Item</button>
       </div>
 
-      <div className="flex gap-2 mb-4">
-        {[['all', 'All'], ['drink', 'Drinks'], ['food', 'Food']].map(([key, label]) => (
-          <button key={key} onClick={() => setFilter(key)} className={`px-4 py-2 rounded-xl font-barlow text-sm transition-colors ${filter === key ? 'bg-amber-600 text-white' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}>{label}</button>
-        ))}
+      {/* View toggle */}
+      <div className="flex gap-2 mb-3">
+        <button onClick={() => setView('all')} className={`px-4 py-2 rounded-xl font-barlow text-sm transition-colors ${view === 'all' ? 'bg-amber-600 text-white' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}>All Items</button>
+        <button onClick={() => setView('86')} className={`px-4 py-2 rounded-xl font-barlow text-sm transition-colors ${view === '86' ? 'bg-red-700 text-white' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}>
+          86 Board {menuItems.filter(i => !i.active).length > 0 && <span className="ml-1 bg-red-500 text-white rounded-full px-1.5 text-xs">{menuItems.filter(i => !i.active).length}</span>}
+        </button>
       </div>
 
+      {view === '86' && (
+        <div className="bg-red-900/20 border border-red-800 rounded-xl p-3 mb-3">
+          <p className="font-barlow text-red-400 text-sm">86'd items are hidden from the ordering menu. Tap "Bring Back" to re-enable.</p>
+        </div>
+      )}
+
+      {view === 'all' && (
+        <div className="flex gap-2 mb-4">
+          {[['all', 'All'], ['drink', 'Drinks'], ['food', 'Food']].map(([key, label]) => (
+            <button key={key} onClick={() => setFilter(key)} className={`px-4 py-2 rounded-xl font-barlow text-sm transition-colors ${filter === key ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}>{label}</button>
+          ))}
+        </div>
+      )}
+
       <div className="space-y-2">
+        {filtered.length === 0 && (
+          <div className="text-center py-10 font-barlow text-zinc-500">{view === '86' ? 'Nothing is 86\'d right now 👍' : 'No items'}</div>
+        )}
         {filtered.map(item => (
-          <div key={item.id} className={`bg-zinc-800 rounded-xl px-4 py-3 flex items-center gap-3 ${!item.active ? 'opacity-50' : ''}`}>
+          <div key={item.id} className={`bg-zinc-800 rounded-xl px-4 py-3 flex items-center gap-3 ${!item.active ? 'opacity-70 border border-red-800/50' : ''}`}>
             <div className="flex-1">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-barlow text-white text-base font-semibold">{item.name}</span>
                 <span className="font-barlow text-zinc-500 text-xs">{item.subcategory}</span>
                 <span className={`font-barlow text-xs px-1.5 py-0.5 rounded ${item.type === 'drink' ? 'bg-blue-900 text-blue-300' : 'bg-green-900 text-green-300'}`}>{item.type}</span>
+                {!item.active && <span className="font-barlow text-xs bg-red-900 text-red-300 px-1.5 py-0.5 rounded">86'd</span>}
+                {item.modifiers?.length > 0 && <span className="font-barlow text-xs bg-purple-900 text-purple-300 px-1.5 py-0.5 rounded">{item.modifiers.length} mod{item.modifiers.length !== 1 ? 's' : ''}</span>}
               </div>
               {item.allergens?.length > 0 && (
                 <p className="font-barlow text-orange-400 text-xs mt-0.5">{item.allergens.join(', ')}</p>
               )}
             </div>
             <span className="font-oswald text-amber-500 text-base">£{item.price?.toFixed(2)}</span>
-            <div className="flex gap-2">
-              <button onClick={() => toggleActive(item.id)} className={`font-barlow text-xs px-2 py-1 rounded transition-colors ${item.active ? 'bg-green-800 text-green-300' : 'bg-zinc-700 text-zinc-400'}`}>
-                {item.active ? 'Active' : 'Off'}
+            <div className="flex gap-2 flex-wrap justify-end">
+              <button onClick={() => toggleActive(item.id)} className={`font-barlow text-xs px-2 py-1 rounded transition-colors ${item.active ? 'bg-red-900/60 text-red-300 hover:bg-red-800' : 'bg-green-800 text-green-300 hover:bg-green-700'}`}>
+                {item.active ? '86 It' : 'Bring Back'}
               </button>
               <button onClick={() => setEditItem(item)} className="font-barlow text-xs px-2 py-1 rounded bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors">Edit</button>
               <button onClick={() => handleDelete(item.id)} className="font-barlow text-xs px-2 py-1 rounded bg-red-900/50 text-red-400 hover:bg-red-900 transition-colors">Del</button>
@@ -90,16 +119,28 @@ export default function MenuAdmin() {
 
 function ItemForm({ item, onSave, onClose }) {
   const [form, setForm] = useState({
-    name: '', type: 'drink', subcategory: 'Beer', price: '', allergens: [], active: true,
+    name: '', type: 'drink', subcategory: 'Beer', price: '', allergens: [], active: true, modifiers: [],
     ...(item || {}),
-    price: item?.price || '',
+    price: item?.price ?? '',
   })
   const [saving, setSaving] = useState(false)
+  const [modifierInput, setModifierInput] = useState({ name: '', price: '' })
 
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }))
   const toggleAllergen = (a) => set('allergens', form.allergens?.includes(a) ? form.allergens.filter(x => x !== a) : [...(form.allergens || []), a])
 
   const subcats = form.type === 'drink' ? DRINK_SUBCATEGORIES : FOOD_SUBCATEGORIES
+
+  const addModifier = () => {
+    if (!modifierInput.name.trim()) return
+    const mod = { id: Date.now(), name: modifierInput.name.trim(), price: parseFloat(modifierInput.price) || 0 }
+    set('modifiers', [...(form.modifiers || []), mod])
+    setModifierInput({ name: '', price: '' })
+  }
+
+  const removeModifier = (id) => {
+    set('modifiers', (form.modifiers || []).filter(m => m.id !== id))
+  }
 
   const handleSave = async () => {
     if (!form.name.trim() || !form.price) return alert('Name and price required')
@@ -144,6 +185,27 @@ function ItemForm({ item, onSave, onClose }) {
             ))}
           </div>
         </div>
+
+        {/* Modifiers */}
+        <div>
+          <label className="label">Modifiers / Options</label>
+          <p className="font-barlow text-zinc-500 text-xs mb-2">E.g. Pint (+£0), Half (−£1.50), Extra Shot (+£0.50)</p>
+          <div className="space-y-1 mb-2">
+            {(form.modifiers || []).map(mod => (
+              <div key={mod.id} className="flex items-center gap-2 bg-zinc-700 rounded-lg px-3 py-2">
+                <span className="font-barlow text-white text-sm flex-1">{mod.name}</span>
+                <span className="font-barlow text-zinc-400 text-sm">{mod.price > 0 ? `+£${mod.price.toFixed(2)}` : mod.price < 0 ? `−£${Math.abs(mod.price).toFixed(2)}` : 'Free'}</span>
+                <button onClick={() => removeModifier(mod.id)} className="text-red-400 hover:text-red-300 text-xs px-1">✕</button>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <input value={modifierInput.name} onChange={e => setModifierInput(p => ({ ...p, name: e.target.value }))} onKeyDown={e => e.key === 'Enter' && addModifier()} className="input-field flex-1" placeholder="Pint, Extra Shot..." />
+            <input type="number" step="0.50" value={modifierInput.price} onChange={e => setModifierInput(p => ({ ...p, price: e.target.value }))} className="input-field w-24" placeholder="±£0" />
+            <button onClick={addModifier} className="bg-zinc-700 hover:bg-zinc-600 text-white px-3 rounded-xl font-barlow text-sm transition-colors">Add</button>
+          </div>
+        </div>
+
         <button onClick={handleSave} disabled={saving} className="w-full bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-oswald py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
           {saving ? <Spinner size="sm" color="white" /> : (item ? 'Save Changes' : 'Add Item')}
         </button>

@@ -8,14 +8,16 @@ import OrdersAdmin from './OrdersAdmin'
 import MarketingAdmin from './MarketingAdmin'
 import EndOfNight from './EndOfNight'
 import SettingsAdmin from './SettingsAdmin'
+import VenuesAdmin from './VenuesAdmin'
 
 const TABS = [
-  { key: 'menu', label: '🍽 Menu', },
+  { key: 'menu', label: '🍽 Menu' },
   { key: 'staff', label: '👥 Staff' },
   { key: 'tables', label: '🪑 Tables' },
   { key: 'orders', label: '📊 Orders' },
   { key: 'marketing', label: '📣 Marketing' },
   { key: 'eod', label: '🌙 End of Night' },
+  { key: 'venues', label: '🏢 Venues' },
   { key: 'settings', label: '⚙️ Settings' },
 ]
 
@@ -112,6 +114,7 @@ export default function AdminPage() {
         {activeTab === 'orders' && <OrdersAdmin />}
         {activeTab === 'marketing' && <MarketingAdmin />}
         {activeTab === 'eod' && <EndOfNight />}
+        {activeTab === 'venues' && <VenuesAdmin />}
         {activeTab === 'settings' && <SettingsAdmin />}
       </div>
     </div>

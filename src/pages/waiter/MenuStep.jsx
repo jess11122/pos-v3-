@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useApp } from '../../context/AppContext'
 import { ALLERGENS, DRINK_SUBCATEGORIES } from '../../lib/constants'
@@ -7,7 +7,7 @@ import Modal from '../../components/ui/Modal'
 import Spinner from '../../components/ui/Spinner'
 
 export default function MenuStep({ table, checklist, staff, mode, onDone, onBack }) {
-  const { settings } = useApp()
+  const { settings, happyHourActive, currentVenue } = useApp()
   const [tab, setTab] = useState('drinks')
   const [cart, setCart] = useState([])
   const [note, setNote] = useState('')
@@ -17,8 +17,19 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
   const [submitting, setSubmitting] = useState(false)
   const [success, setSuccess] = useState(false)
   const [showCart, setShowCart] = useState(false)
+  // Modifier selection modal
+  const [modifierItem, setModifierItem] = useState(null) // item awaiting modifier selection
+  const [selectedMods, setSelectedMods] = useState([]) // selected modifier ids for current item
 
   const menuItems = settings?.menu_items || []
+  const happyHour = settings?.happy_hour
+
+  const getEffectivePrice = (item) => {
+    if (!happyHourActive || !happyHour) return item.price
+    const cats = happyHour.categories || []
+    if (cats.length > 0 && !cats.includes(item.subcategory)) return item.price
+    return item.price * (1 - (happyHour.discount_percent || 0) / 100)
+  }
 
   const drinks = menuItems.filter(i => i.type === 'drink' && i.active !== false)
   const food = menuItems.filter(i => i.type === 'food' && i.active !== false)
@@ -35,25 +46,42 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
     return food
   }, [food, filterAllergens])
 
-  const cartTotal = cart.reduce((s, i) => s + i.price * i.qty, 0)
+  // Cart total accounts for modifiers
+  const cartTotal = cart.reduce((s, i) => {
+    const modPrice = (i.selectedMods || []).reduce((ms, m) => ms + (m.price || 0), 0)
+    return s + (i.price + modPrice) * i.qty
+  }, 0)
 
-  const addItem = (item) => {
+  const tapItem = (item) => {
+    const mods = item.modifiers || []
+    if (mods.length > 0) {
+      setModifierItem(item)
+      setSelectedMods([])
+    } else {
+      addToCart(item, [])
+    }
+  }
+
+  const addToCart = (item, mods) => {
+    const modPrice = mods.reduce((s, m) => s + (m.price || 0), 0)
+    const effectivePrice = getEffectivePrice(item)
+    const cartKey = item.id + '|' + mods.map(m => m.id).join(',')
     setCart(prev => {
-      const existing = prev.find(x => x.id === item.id)
-      if (existing) return prev.map(x => x.id === item.id ? { ...x, qty: x.qty + 1 } : x)
-      return [...prev, { ...item, qty: 1 }]
+      const existing = prev.find(x => x.cartKey === cartKey)
+      if (existing) return prev.map(x => x.cartKey === cartKey ? { ...x, qty: x.qty + 1 } : x)
+      return [...prev, { ...item, price: effectivePrice, cartKey, selectedMods: mods, qty: 1 }]
     })
   }
 
-  const removeItem = (id) => {
+  const removeItem = (cartKey) => {
     setCart(prev => {
-      const existing = prev.find(x => x.id === id)
-      if (!existing || existing.qty <= 1) return prev.filter(x => x.id !== id)
-      return prev.map(x => x.id === id ? { ...x, qty: x.qty - 1 } : x)
+      const existing = prev.find(x => x.cartKey === cartKey)
+      if (!existing || existing.qty <= 1) return prev.filter(x => x.cartKey !== cartKey)
+      return prev.map(x => x.cartKey === cartKey ? { ...x, qty: x.qty - 1 } : x)
     })
   }
 
-  const getQty = (id) => cart.find(x => x.id === id)?.qty || 0
+  const getQty = (id) => cart.filter(x => x.id === id).reduce((s, x) => s + x.qty, 0)
 
   const handleSubmit = async () => {
     if (cart.length === 0) return
@@ -63,10 +91,15 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
     const drinkItems = cart.filter(i => i.type === 'drink')
 
     try {
-      // Insert order
       const { data: order, error } = await supabase.from('orders').insert({
         table_number: table.number,
-        items: cart.map(i => ({ id: i.id, name: i.name, type: i.type, price: i.price, qty: i.qty })),
+        items: cart.map(i => ({
+          id: i.id,
+          name: i.name + (i.selectedMods?.length ? ' (' + i.selectedMods.map(m => m.name).join(', ') + ')' : ''),
+          type: i.type,
+          price: i.price + (i.selectedMods || []).reduce((s, m) => s + (m.price || 0), 0),
+          qty: i.qty,
+        })),
         note,
         total: cartTotal,
         status: 'pending',
@@ -76,40 +109,41 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
         allergens: checklist.allergens,
         staff_name: staff.name,
         staff_colour: staff.colour,
+        ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}),
       }).select().single()
 
       if (error) throw error
 
-      // Insert routed items
       const routedItems = [
         ...drinkItems.map(i => ({
           order_id: order.id,
-          item_name: i.name,
+          item_name: i.name + (i.selectedMods?.length ? ' (' + i.selectedMods.map(m => m.name).join(', ') + ')' : ''),
           item_type: 'drink',
           quantity: i.qty,
           status: 'pending',
           routed_to: 'bar',
+          ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}),
         })),
         ...foodItems.map(i => ({
           order_id: order.id,
-          item_name: i.name,
+          item_name: i.name + (i.selectedMods?.length ? ' (' + i.selectedMods.map(m => m.name).join(', ') + ')' : ''),
           item_type: 'food',
           quantity: i.qty,
           status: 'pending',
           routed_to: 'kitchen',
+          ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}),
         })),
       ]
       if (routedItems.length > 0) {
         await supabase.from('order_items_routed').insert(routedItems)
       }
 
-      // Print tickets
       const timeStr = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
       if (drinkItems.length > 0) {
-        await printTicket({ type: 'bar', tableNumber: table.number, items: drinkItems.map(i => ({ name: i.name, quantity: i.qty })), allergens: checklist.allergens, staffName: staff.name, note, time: timeStr })
+        await printTicket({ type: 'bar', tableNumber: table.number, items: drinkItems.map(i => ({ name: i.name + (i.selectedMods?.length ? ' (' + i.selectedMods.map(m => m.name).join(', ') + ')' : ''), quantity: i.qty })), allergens: checklist.allergens, staffName: staff.name, note, time: timeStr })
       }
       if (foodItems.length > 0) {
-        await printTicket({ type: 'kitchen', tableNumber: table.number, items: foodItems.map(i => ({ name: i.name, quantity: i.qty })), allergens: checklist.allergens, staffName: staff.name, note, time: timeStr })
+        await printTicket({ type: 'kitchen', tableNumber: table.number, items: foodItems.map(i => ({ name: i.name + (i.selectedMods?.length ? ' (' + i.selectedMods.map(m => m.name).join(', ') + ')' : ''), quantity: i.qty })), allergens: checklist.allergens, staffName: staff.name, note, time: timeStr })
       }
 
       setShowConfirm(false)
@@ -145,6 +179,11 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
             <p className="font-barlow text-red-400 text-sm">⚠ Allergens: {checklist.allergens.join(', ')}</p>
           )}
         </div>
+        {happyHourActive && (
+          <span className="bg-amber-600/20 border border-amber-500 text-amber-400 font-barlow text-xs px-2 py-1 rounded-full animate-pulse">
+            🍺 Happy Hour {happyHour?.discount_percent}% off
+          </span>
+        )}
         <button
           onClick={() => setShowCart(true)}
           className="relative bg-amber-600 text-white font-oswald px-4 py-2 rounded-xl flex items-center gap-2"
@@ -206,7 +245,7 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
               <h3 className="font-oswald text-zinc-400 text-base tracking-widest mb-2 uppercase">{sc}</h3>
               <div className="space-y-2">
                 {visibleDrinks.filter(i => i.subcategory === sc).map(item => (
-                  <MenuItemRow key={item.id} item={item} qty={getQty(item.id)} onAdd={() => addItem(item)} onRemove={() => removeItem(item.id)} />
+                  <MenuItemRow key={item.id} item={item} qty={getQty(item.id)} effectivePrice={getEffectivePrice(item)} happyHour={happyHourActive} onTap={() => tapItem(item)} />
                 ))}
               </div>
             </div>
@@ -214,7 +253,7 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
         ) : (
           <div className="space-y-2">
             {visibleItems.map(item => (
-              <MenuItemRow key={item.id} item={item} qty={getQty(item.id)} onAdd={() => addItem(item)} onRemove={() => removeItem(item.id)} />
+              <MenuItemRow key={item.id} item={item} qty={getQty(item.id)} effectivePrice={getEffectivePrice(item)} happyHour={happyHourActive} onTap={() => tapItem(item)} />
             ))}
             {visibleItems.length === 0 && (
               <div className="text-center text-zinc-500 font-barlow text-lg py-12">
@@ -237,23 +276,60 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
         </div>
       )}
 
+      {/* Modifier selection modal */}
+      {modifierItem && (
+        <Modal title={modifierItem.name} onClose={() => setModifierItem(null)} size="sm">
+          <div className="space-y-3">
+            <p className="font-barlow text-zinc-400 text-sm">Select options:</p>
+            {(modifierItem.modifiers || []).map(mod => {
+              const selected = selectedMods.find(m => m.id === mod.id)
+              return (
+                <button
+                  key={mod.id}
+                  onClick={() => setSelectedMods(prev => prev.find(m => m.id === mod.id) ? prev.filter(m => m.id !== mod.id) : [...prev, mod])}
+                  className={`w-full flex items-center justify-between px-4 py-3 rounded-xl font-barlow text-base transition-colors ${selected ? 'bg-amber-600 text-white' : 'bg-zinc-700 text-white hover:bg-zinc-600'}`}
+                >
+                  <span>{mod.name}</span>
+                  <span className="text-sm opacity-75">{mod.price > 0 ? `+£${mod.price.toFixed(2)}` : mod.price < 0 ? `−£${Math.abs(mod.price).toFixed(2)}` : 'Included'}</span>
+                </button>
+              )
+            })}
+            <button
+              onClick={() => { addToCart(modifierItem, selectedMods); setModifierItem(null) }}
+              className="w-full bg-amber-600 hover:bg-amber-700 text-white font-oswald text-lg py-4 rounded-xl transition-colors"
+            >
+              Add to Order — £{(getEffectivePrice(modifierItem) + selectedMods.reduce((s, m) => s + (m.price || 0), 0)).toFixed(2)}
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {/* Cart drawer */}
       {showCart && (
         <Modal title="Order Summary" onClose={() => setShowCart(false)} size="md">
           <div className="space-y-3">
-            {cart.map(item => (
-              <div key={item.id} className="flex items-center gap-3">
-                <button onClick={() => removeItem(item.id)} className="w-8 h-8 bg-zinc-700 rounded-full text-white hover:bg-red-700 transition-colors flex items-center justify-center">−</button>
-                <span className="font-barlow text-zinc-400 text-base w-6 text-center">{item.qty}×</span>
-                <span className="font-barlow text-white flex-1 text-base">{item.name}</span>
-                <span className="font-barlow text-zinc-300 text-base">£{(item.price * item.qty).toFixed(2)}</span>
-                <button onClick={() => addItem(item)} className="w-8 h-8 bg-zinc-700 rounded-full text-white hover:bg-green-700 transition-colors flex items-center justify-center">+</button>
-              </div>
-            ))}
+            {cart.map(item => {
+              const linePrice = (item.price + (item.selectedMods || []).reduce((s, m) => s + (m.price || 0), 0)) * item.qty
+              return (
+                <div key={item.cartKey} className="flex items-center gap-3">
+                  <button onClick={() => removeItem(item.cartKey)} className="w-8 h-8 bg-zinc-700 rounded-full text-white hover:bg-red-700 transition-colors flex items-center justify-center">−</button>
+                  <span className="font-barlow text-zinc-400 text-base w-6 text-center">{item.qty}×</span>
+                  <div className="flex-1">
+                    <span className="font-barlow text-white text-base">{item.name}</span>
+                    {item.selectedMods?.length > 0 && <p className="font-barlow text-zinc-500 text-xs">{item.selectedMods.map(m => m.name).join(', ')}</p>}
+                  </div>
+                  <span className="font-barlow text-zinc-300 text-base">£{linePrice.toFixed(2)}</span>
+                  <button onClick={() => addToCart(item, item.selectedMods || [])} className="w-8 h-8 bg-zinc-700 rounded-full text-white hover:bg-green-700 transition-colors flex items-center justify-center">+</button>
+                </div>
+              )
+            })}
             <div className="border-t border-zinc-700 pt-3 flex justify-between">
               <span className="font-oswald text-white text-xl">Total</span>
               <span className="font-oswald text-amber-500 text-xl">£{cartTotal.toFixed(2)}</span>
             </div>
+            {happyHourActive && (
+              <p className="font-barlow text-amber-400 text-sm text-center">🍺 Happy hour {happyHour?.discount_percent}% discount applied</p>
+            )}
             <div>
               <label className="font-barlow text-zinc-400 text-sm block mb-1">Special note (optional)</label>
               <textarea
@@ -279,18 +355,26 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
         <Modal title="Confirm Order" onClose={() => !submitting && setShowConfirm(false)} size="md">
           <div className="space-y-4">
             <div className="bg-zinc-700 rounded-xl p-4 space-y-2">
-              {cart.map(item => (
-                <div key={item.id} className="flex justify-between font-barlow text-white text-base">
-                  <span>{item.qty}× {item.name}</span>
-                  <span>£{(item.price * item.qty).toFixed(2)}</span>
-                </div>
-              ))}
+              {cart.map(item => {
+                const linePrice = (item.price + (item.selectedMods || []).reduce((s, m) => s + (m.price || 0), 0)) * item.qty
+                return (
+                  <div key={item.cartKey}>
+                    <div className="flex justify-between font-barlow text-white text-base">
+                      <span>{item.qty}× {item.name}</span>
+                      <span>£{linePrice.toFixed(2)}</span>
+                    </div>
+                    {item.selectedMods?.length > 0 && (
+                      <p className="font-barlow text-zinc-500 text-xs ml-4">{item.selectedMods.map(m => m.name).join(', ')}</p>
+                    )}
+                  </div>
+                )
+              })}
               <div className="border-t border-zinc-600 pt-2 flex justify-between">
                 <span className="font-oswald text-white">Total</span>
                 <span className="font-oswald text-amber-500">£{cartTotal.toFixed(2)}</span>
               </div>
             </div>
-            <div className="flex gap-3 text-sm font-barlow text-zinc-400">
+            <div className="flex gap-3 text-sm font-barlow text-zinc-400 flex-wrap">
               <span>Table {table.number}</span>
               <span>·</span>
               <span>{staff.name}</span>
@@ -315,7 +399,8 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
   )
 }
 
-function MenuItemRow({ item, qty, onAdd, onRemove }) {
+function MenuItemRow({ item, qty, effectivePrice, happyHour, onTap }) {
+  const hasDiscount = happyHour && effectivePrice < item.price
   return (
     <div className="bg-zinc-800 rounded-xl px-4 py-3 flex items-center gap-3">
       <div className="flex-1">
@@ -323,14 +408,19 @@ function MenuItemRow({ item, qty, onAdd, onRemove }) {
         {item.allergens?.length > 0 && (
           <div className="font-barlow text-orange-400 text-xs mt-0.5">{item.allergens.join(' · ')}</div>
         )}
-      </div>
-      <div className="font-barlow text-zinc-300 text-base mr-2">£{item.price.toFixed(2)}</div>
-      <div className="flex items-center gap-2">
-        {qty > 0 && (
-          <button onClick={onRemove} className="w-9 h-9 bg-zinc-700 rounded-full text-white hover:bg-red-700 transition-colors flex items-center justify-center font-bold text-lg">−</button>
+        {item.modifiers?.length > 0 && (
+          <div className="font-barlow text-zinc-500 text-xs mt-0.5">Options available</div>
         )}
+      </div>
+      <div className="text-right mr-2">
+        {hasDiscount && <div className="font-barlow text-zinc-500 text-xs line-through">£{item.price.toFixed(2)}</div>}
+        <div className={`font-barlow text-base ${hasDiscount ? 'text-amber-400' : 'text-zinc-300'}`}>£{effectivePrice.toFixed(2)}</div>
+      </div>
+      <div className="flex items-center gap-2">
+        <button onClick={onTap} className="w-9 h-9 bg-amber-600 rounded-full text-white hover:bg-amber-700 transition-colors flex items-center justify-center font-bold text-lg">
+          {item.modifiers?.length > 0 ? '⊕' : '+'}
+        </button>
         {qty > 0 && <span className="font-oswald text-white text-lg w-5 text-center">{qty}</span>}
-        <button onClick={onAdd} className="w-9 h-9 bg-amber-600 rounded-full text-white hover:bg-amber-700 transition-colors flex items-center justify-center font-bold text-lg">+</button>
       </div>
     </div>
   )

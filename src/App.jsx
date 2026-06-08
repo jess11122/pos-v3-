@@ -12,8 +12,32 @@ import TablesPage from './pages/TablesPage'
 import BookingsPage from './pages/BookingsPage'
 import AdminPage from './pages/admin/AdminPage'
 
+function VenuePicker() {
+  const { venues, selectVenue } = useApp()
+  return (
+    <div className="min-h-screen bg-[#1a1a1a] flex items-center justify-center p-6">
+      <div className="bg-zinc-800 rounded-3xl p-8 w-full max-w-sm text-center shadow-2xl">
+        <div className="text-4xl mb-4">🏢</div>
+        <h1 className="font-oswald text-3xl text-white mb-2">Choose Venue</h1>
+        <p className="font-barlow text-zinc-400 mb-6">Select which location you're working at</p>
+        <div className="space-y-3">
+          {venues.map(v => (
+            <button
+              key={v.id}
+              onClick={() => selectVenue(v)}
+              className="w-full bg-zinc-700 hover:bg-amber-600 text-white font-oswald text-xl py-4 rounded-2xl transition-colors"
+            >
+              {v.name}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AppRoutes() {
-  const { settings, loadingSettings, settingsError, refreshSettings } = useApp()
+  const { settings, loadingSettings, settingsError, refreshSettings, venues, currentVenue } = useApp()
 
   if (loadingSettings) {
     return (
@@ -42,6 +66,11 @@ function AppRoutes() {
         </div>
       </div>
     )
+  }
+
+  // Multiple venues exist but none selected — show venue picker
+  if (venues.length > 1 && !currentVenue) {
+    return <VenuePicker />
   }
 
   if (!settings) {

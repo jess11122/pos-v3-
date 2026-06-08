@@ -8,11 +8,13 @@ const PAGE_SIZE = 50
 export default function OrdersAdmin() {
   const [period, setPeriod] = useState('today')
   const [orders, setOrders] = useState([])
+  const [allPeriodOrders, setAllPeriodOrders] = useState([])
   const [tips, setTips] = useState([])
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(0)
   const [total, setTotal] = useState(0)
   const [expanded, setExpanded] = useState(null)
+  const [voids, setVoids] = useState([])
 
   const today = format(new Date(), 'yyyy-MM-dd')
   const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd')
@@ -23,7 +25,7 @@ export default function OrdersAdmin() {
     const from = period === 'today' ? today : weekStart
     const to = period === 'today' ? today : weekEnd
 
-    const [ordersRes, tipsRes, countRes] = await Promise.all([
+    const [ordersRes, tipsRes, countRes, chartRes, voidsRes] = await Promise.all([
       supabase.from('orders')
         .select('*')
         .gte('created_at', from + 'T00:00:00')
@@ -40,21 +42,35 @@ export default function OrdersAdmin() {
         .gte('created_at', from + 'T00:00:00')
         .lte('created_at', to + 'T23:59:59')
         .eq('status', 'complete'),
+      // All orders for chart (no pagination)
+      supabase.from('orders')
+        .select('created_at,total')
+        .gte('created_at', from + 'T00:00:00')
+        .lte('created_at', to + 'T23:59:59')
+        .eq('status', 'complete')
+        .limit(5000),
+      supabase.from('voids')
+        .select('*')
+        .gte('created_at', from + 'T00:00:00')
+        .lte('created_at', to + 'T23:59:59')
+        .limit(200),
     ])
 
     setOrders(ordersRes.data || [])
+    setAllPeriodOrders(chartRes.data || [])
     setTips(tipsRes.data || [])
     setTotal(countRes.count || 0)
+    setVoids(voidsRes.data || [])
     setLoading(false)
   }, [period, page, today, weekStart, weekEnd])
 
-  useEffect(() => { setPage(0); load() }, [period])
-  useEffect(() => { load() }, [page])
+  useEffect(() => { setPage(0) }, [period])
+  useEffect(() => { load() }, [load])
 
   const revenue = orders.reduce((s, o) => s + (o.total || 0), 0)
   const tipsTotal = tips.reduce((s, t) => s + (t.amount || 0), 0)
+  const voidsTotal = voids.reduce((s, v) => s + (v.amount || 0), 0)
 
-  // Group by table
   const byTable = orders.reduce((acc, o) => {
     const k = o.table_number
     if (!acc[k]) acc[k] = { tableNumber: k, orders: [], total: 0 }
@@ -67,7 +83,6 @@ export default function OrdersAdmin() {
 
   return (
     <div className="p-5 max-w-4xl mx-auto space-y-5">
-      {/* Period toggle */}
       <div className="flex gap-2">
         {[['today', 'Today'], ['week', 'This Week']].map(([key, label]) => (
           <button key={key} onClick={() => setPeriod(key)} className={`px-4 py-2 rounded-xl font-barlow text-sm transition-colors ${period === key ? 'bg-amber-600 text-white' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}>{label}</button>
@@ -75,14 +90,21 @@ export default function OrdersAdmin() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <SummaryCard label="Revenue" value={`£${revenue.toFixed(2)}`} colour="text-amber-500" />
         <SummaryCard label="Tips" value={`£${tipsTotal.toFixed(2)}`} colour="text-green-400" />
         <SummaryCard label="Combined" value={`£${(revenue + tipsTotal).toFixed(2)}`} colour="text-white" />
+        <SummaryCard label="Voids" value={`−£${voidsTotal.toFixed(2)}`} colour="text-red-400" />
       </div>
+
+      {/* Revenue Chart */}
+      <RevenueChart orders={allPeriodOrders} period={period} today={today} weekStart={weekStart} />
 
       {/* Staff tips leaderboard */}
       {tips.length > 0 && <StaffTipsLeaderboard tips={tips} />}
+
+      {/* Voids list */}
+      {voids.length > 0 && <VoidsList voids={voids} />}
 
       {/* Per-table breakdown */}
       <div className="bg-zinc-800 rounded-2xl p-4">
@@ -139,7 +161,6 @@ export default function OrdersAdmin() {
             ))}
           </div>
 
-          {/* Pagination */}
           {pages > 1 && (
             <div className="flex justify-center gap-2 mt-4">
               <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="px-3 py-1.5 bg-zinc-700 text-zinc-300 rounded-lg disabled:opacity-30 font-barlow text-sm">← Prev</button>
@@ -149,6 +170,67 @@ export default function OrdersAdmin() {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function RevenueChart({ orders, period, today, weekStart }) {
+  if (orders.length === 0) return null
+
+  const isToday = period === 'today'
+
+  // Build buckets: hourly for today (7am–2am = 19 slots), daily Mon–Sun for week
+  let buckets = []
+  if (isToday) {
+    for (let h = 7; h <= 24; h++) {
+      buckets.push({ label: h === 24 ? '00' : `${h}`, value: 0 })
+    }
+    for (const o of orders) {
+      const h = new Date(o.created_at).getHours()
+      const idx = h < 7 ? buckets.length - 1 : h - 7
+      if (idx >= 0 && idx < buckets.length) buckets[idx].value += o.total || 0
+    }
+  } else {
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    buckets = days.map(d => ({ label: d, value: 0 }))
+    for (const o of orders) {
+      const dow = (new Date(o.created_at).getDay() + 6) % 7 // Mon=0
+      buckets[dow].value += o.total || 0
+    }
+  }
+
+  const maxVal = Math.max(...buckets.map(b => b.value), 1)
+
+  return (
+    <div className="bg-zinc-800 rounded-2xl p-4">
+      <h3 className="font-oswald text-white text-lg mb-4">{isToday ? 'Revenue by Hour' : 'Revenue by Day'}</h3>
+      <div className="flex items-end gap-1 h-32">
+        {buckets.map((b, i) => {
+          const heightPct = (b.value / maxVal) * 100
+          const isActive = b.value > 0
+          return (
+            <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
+              <div className="w-full flex-1 flex items-end">
+                <div
+                  className="w-full rounded-t-sm transition-all bg-amber-600/70 group-hover:bg-amber-500"
+                  style={{ height: `${Math.max(heightPct, isActive ? 4 : 0)}%` }}
+                />
+              </div>
+              {/* Tooltip on hover */}
+              {isActive && (
+                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-zinc-700 text-white font-barlow text-xs px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none z-10 transition-opacity">
+                  £{b.value.toFixed(0)}
+                </div>
+              )}
+              <span className="font-barlow text-zinc-500 text-xs leading-none">{b.label}</span>
+            </div>
+          )
+        })}
+      </div>
+      <div className="flex justify-between mt-2 font-barlow text-zinc-500 text-xs">
+        <span>£0</span>
+        <span>Peak: £{maxVal.toFixed(0)}</span>
+      </div>
     </div>
   )
 }
@@ -182,6 +264,25 @@ function StaffTipsLeaderboard({ tips }) {
               <span className="absolute inset-0 flex items-center px-3 font-barlow text-white text-sm">{name}</span>
             </div>
             <span className="font-oswald text-amber-500 w-16 text-right">£{amount.toFixed(2)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function VoidsList({ voids }) {
+  return (
+    <div className="bg-zinc-800 rounded-2xl p-4">
+      <h3 className="font-oswald text-white text-lg mb-3">Void Log ({voids.length})</h3>
+      <div className="space-y-2">
+        {voids.map(v => (
+          <div key={v.id} className="flex items-center justify-between bg-zinc-700 rounded-xl px-4 py-2">
+            <div>
+              <span className="font-barlow text-white text-sm">{v.quantity}× {v.item_name}</span>
+              <p className="font-barlow text-zinc-500 text-xs">{v.reason} · {v.voided_by} · {format(new Date(v.created_at), 'HH:mm')}</p>
+            </div>
+            <span className="font-oswald text-red-400">−£{v.amount?.toFixed(2)}</span>
           </div>
         ))}
       </div>
