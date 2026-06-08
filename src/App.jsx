@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import { lazy, Suspense, useState, useEffect } from 'react'
 import { AppProvider, useApp } from './context/AppContext'
 import ErrorBoundary from './components/ui/ErrorBoundary'
@@ -16,6 +16,23 @@ import AdminPage from './pages/admin/AdminPage'
 // Lazy-load heavy/less-frequent pages
 const DisplayPage = lazy(() => import('./pages/DisplayPage'))
 const GroupDashboard = lazy(() => import('./pages/GroupDashboard'))
+
+// Floating home button — visible on every page except the home screen itself
+function HomeButton() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  if (location.pathname === '/') return null
+  return (
+    <button
+      onClick={() => navigate('/')}
+      className="fixed bottom-5 left-5 z-50 w-14 h-14 bg-zinc-800 hover:bg-amber-600 border border-zinc-700 hover:border-amber-500 rounded-2xl shadow-2xl flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95"
+      aria-label="Home"
+    >
+      <span className="text-xl leading-none">🏠</span>
+      <span className="font-barlow text-white text-[10px] leading-none">Home</span>
+    </button>
+  )
+}
 
 // PWA service worker registration
 if ('serviceWorker' in navigator) {
@@ -154,6 +171,7 @@ function AppRoutes() {
 
   return (
     <>
+      <HomeButton />
       <Routes>
         <Route path="/" element={<RoleSelect />} />
         <Route path="/waiter" element={<ErrorBoundary><WaiterPage /></ErrorBoundary>} />

@@ -433,26 +433,35 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
 function MenuItemRow({ item, qty, effectivePrice, happyHour, onTap }) {
   const hasDiscount = happyHour && effectivePrice < item.price
   return (
-    <div className="bg-zinc-800 rounded-xl px-4 py-3 flex items-center gap-3">
-      <div className="flex-1">
-        <div className="font-barlow text-white text-base font-semibold">{item.name}</div>
+    <button
+      onClick={onTap}
+      className={`w-full text-left rounded-xl px-4 py-3 flex items-center gap-3 transition-all active:scale-[0.98] ${
+        qty > 0 ? 'bg-amber-900/30 border border-amber-700/50' : 'bg-zinc-800 border border-transparent hover:bg-zinc-700'
+      }`}
+    >
+      <div className="flex-1 min-w-0">
+        <div className="font-barlow text-white text-base font-semibold leading-tight">{item.name}</div>
         {item.allergens?.length > 0 && (
           <div className="font-barlow text-orange-400 text-xs mt-0.5">{item.allergens.join(' · ')}</div>
         )}
         {item.modifiers?.length > 0 && (
-          <div className="font-barlow text-zinc-500 text-xs mt-0.5">Options available</div>
+          <div className="font-barlow text-zinc-500 text-xs mt-0.5">Tap to choose options</div>
         )}
       </div>
-      <div className="text-right mr-2">
+      <div className="text-right flex-shrink-0">
         {hasDiscount && <div className="font-barlow text-zinc-500 text-xs line-through">£{item.price.toFixed(2)}</div>}
-        <div className={`font-barlow text-base ${hasDiscount ? 'text-amber-400' : 'text-zinc-300'}`}>£{effectivePrice.toFixed(2)}</div>
+        <div className={`font-barlow text-base font-semibold ${hasDiscount ? 'text-amber-400' : 'text-zinc-300'}`}>£{effectivePrice.toFixed(2)}</div>
       </div>
-      <div className="flex items-center gap-2">
-        <button onClick={onTap} className="w-9 h-9 bg-amber-600 rounded-full text-white hover:bg-amber-700 transition-colors flex items-center justify-center font-bold text-lg">
-          {item.modifiers?.length > 0 ? '⊕' : '+'}
-        </button>
-        {qty > 0 && <span className="font-oswald text-white text-lg w-5 text-center">{qty}</span>}
-      </div>
-    </div>
+      {qty > 0 && (
+        <div className="flex-shrink-0 w-8 h-8 bg-amber-600 rounded-full flex items-center justify-center">
+          <span className="font-oswald text-white text-base leading-none">{qty}</span>
+        </div>
+      )}
+      {qty === 0 && (
+        <div className="flex-shrink-0 w-8 h-8 rounded-full border border-zinc-600 flex items-center justify-center text-zinc-500 text-lg">
+          +
+        </div>
+      )}
+    </button>
   )
 }
