@@ -1,9 +1,10 @@
 import { useState, useCallback } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useApp } from '../../context/AppContext'
-import { format } from 'date-fns'
+import { format, subDays } from 'date-fns'
 import Spinner from '../../components/ui/Spinner'
 import Modal from '../../components/ui/Modal'
+import { launchConfetti } from '../../lib/confetti'
 
 export default function EndOfNight() {
   const { settings } = useApp()
@@ -15,9 +16,11 @@ export default function EndOfNight() {
     setLoading(true)
     const today = format(new Date(), 'yyyy-MM-dd')
 
-    const [ordersRes, tipsRes] = await Promise.all([
+    const yesterday = format(subDays(new Date(), 1), 'yyyy-MM-dd')
+    const [ordersRes, tipsRes, yesterdayRes] = await Promise.all([
       supabase.from('orders').select('*').gte('created_at', today + 'T00:00:00').eq('status', 'complete'),
       supabase.from('tips').select('*').gte('created_at', today + 'T00:00:00'),
+      supabase.from('orders').select('total').gte('created_at', yesterday + 'T00:00:00').lte('created_at', yesterday + 'T23:59:59').eq('status', 'complete'),
     ])
 
     const orders = ordersRes.data || []
@@ -53,6 +56,9 @@ export default function EndOfNight() {
       return acc
     }, {})
 
+    const yesterdayRevenue = (yesterdayRes.data || []).reduce((s, o) => s + (o.total || 0), 0)
+    const beatYesterday = revenue > yesterdayRevenue && yesterdayRevenue > 0
+
     setReport({
       date: format(new Date(), 'EEEE d MMMM yyyy'),
       revenue, tipsTotal, combined: revenue + tipsTotal,
@@ -63,7 +69,11 @@ export default function EndOfNight() {
       topItem: topItem ? `${topItem[0]} (×${topItem[1]})` : 'N/A',
       staffTips,
       venueName: settings?.venue_name || 'Venue',
+      beatYesterday,
+      yesterdayRevenue,
     })
+
+    if (beatYesterday) launchConfetti()
     setLoading(false)
   }, [settings])
 
@@ -107,6 +117,15 @@ ${Object.entries(report.staffTips).sort(([,a],[,b]) => b - a).map(([n, a]) => ` 
       >
         {loading ? <Spinner size="sm" color="white" /> : '📊'} Generate Report
       </button>
+
+      {report?.beatYesterday && (
+        <div className="bg-green-900/30 border border-green-700/50 rounded-2xl p-4 text-center">
+          <p className="font-oswald text-green-400 text-xl">🎉 Best day this week!</p>
+          <p className="font-barlow text-green-300 text-sm mt-1">
+            Today's £{report.revenue.toFixed(2)} beats yesterday's £{report.yesterdayRevenue.toFixed(2)}
+          </p>
+        </div>
+      )}
 
       {report && (
         <div className="bg-zinc-800 rounded-2xl p-5 space-y-4">

@@ -71,6 +71,22 @@ h1, h2, h3, h4 {
 .slide-up { animation: slide-up 0.3s ease-out; }
 .fade-in { animation: fade-in 0.2s ease-out; }
 .pulse-ready { animation: pulse-ready 2s infinite; }
+.animate-slide-up { animation: slide-up 0.35s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* Button micro-animation */
+button { transition: transform 0.1s ease, opacity 0.15s ease; }
+button:active:not(:disabled) { transform: scale(0.97); }
+
+/* Skeleton shimmer */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.animate-pulse {
+  background: linear-gradient(90deg, #27272a 25%, #3f3f46 50%, #27272a 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
 
 /* Reusable field classes */
 .input-field {

@@ -157,6 +157,18 @@ export default function MenuStep({ table, checklist, staff, mode, onDone, onBack
         await supabase.from('order_items_routed').insert(routedItems)
       }
 
+      // Auto-log allergen compliance record (Natasha's Law)
+      if (cleanAllergens.length > 0) {
+        await supabase.from('compliance_log').insert({
+          table_number: table.number,
+          staff_name: staff.name,
+          allergens: cleanAllergens,
+          items: cart.map(i => ({ name: i.name, qty: i.qty })),
+          id_checked: checklist.idChecked || false,
+          ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}),
+        })
+      }
+
       const timeStr = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
       if (drinkItems.length > 0) {
         await printTicket({ type: 'bar', tableNumber: table.number, items: drinkItems.map(i => ({ name: i.name + (i.selectedMods?.length ? ' (' + i.selectedMods.map(m => m.name).join(', ') + ')' : ''), quantity: i.qty })), allergens: checklist.allergens, staffName: staff.name, note, time: timeStr })

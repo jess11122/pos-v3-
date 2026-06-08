@@ -32,6 +32,71 @@ function elapsedColour(openedAt, now) {
   return 'text-red-400'
 }
 
+// ─── One-Tap Reorder Banner ───────────────────────────────────────────────
+function ReorderBanner({ currentVenue, staffName, onReordered }) {
+  const [closedTables, setClosedTables] = useState([])
+  const [reordering, setReordering] = useState(null)
+
+  useEffect(() => {
+    const load = async () => {
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+      const { data } = await supabase.from('orders')
+        .select('table_number,items,staff_name,completed_at')
+        .eq('status', 'complete').eq('tab_closed', true)
+        .gte('completed_at', twoHoursAgo)
+        .order('completed_at', { ascending: false })
+        .limit(20)
+      // Group by table, dedupe
+      const seen = new Set()
+      const unique = (data || []).filter(o => {
+        if (seen.has(o.table_number)) return false
+        seen.add(o.table_number)
+        return true
+      })
+      setClosedTables(unique)
+    }
+    load()
+  }, [])
+
+  if (closedTables.length === 0) return null
+
+  const reorder = async (order) => {
+    setReordering(order.table_number)
+    try {
+      await supabase.from('orders').insert({
+        table_number: order.table_number,
+        items: order.items,
+        total: (order.items || []).reduce((s, i) => s + (i.price || 0) * (i.qty || 1), 0),
+        status: 'pending',
+        tab_closed: false,
+        staff_name: staffName || order.staff_name,
+        ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}),
+      })
+      setClosedTables(prev => prev.filter(t => t.table_number !== order.table_number))
+      onReordered?.()
+    } catch (e) { alert('Reorder failed: ' + e.message) }
+    finally { setReordering(null) }
+  }
+
+  return (
+    <div className="px-4 py-3 bg-zinc-900 border-b border-zinc-800">
+      <p className="font-barlow text-zinc-500 text-xs mb-2 uppercase tracking-wider">Reorder same — recently closed</p>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {closedTables.map(t => (
+          <button
+            key={t.table_number}
+            onClick={() => reorder(t)}
+            disabled={reordering === t.table_number}
+            className="flex-shrink-0 bg-zinc-800 hover:bg-amber-600 border border-zinc-700 hover:border-amber-500 text-white font-barlow text-xs px-4 py-2 rounded-xl transition-all active:scale-95 disabled:opacity-50"
+          >
+            {reordering === t.table_number ? '…' : `↩ T${t.table_number} (${(t.items || []).length} items)`}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────
 export default function TablesPage() {
   const navigate = useNavigate()
@@ -147,6 +212,8 @@ export default function TablesPage() {
           ))}
         </div>
       </header>
+
+      <ReorderBanner currentVenue={currentVenue} staffName={selectedStaff?.name} onReordered={loadTables} />
 
       {loading ? (
         <div className="flex-1 flex items-center justify-center"><Spinner size="lg" /></div>
@@ -338,7 +405,8 @@ function PaymentPanel({ table, staffPicker, currentVenue, onClose, onPaid }) {
   const [customTip, setCustomTip] = useState('')
   const [staffName, setStaffName] = useState(staffPicker || table.staffName)
   const [processing, setProcessing] = useState(false)
-  const [screen, setScreen] = useState('bill') // 'bill' | 'void' | 'split'
+  const [screen, setScreen] = useState('bill') // 'bill' | 'void' | 'split' | 'link'
+  const [receiptEmail, setReceiptEmail] = useState('')
 
   const total = table.orders.reduce((s, o) => s + (o.total || 0) - (o.voided_amount || 0), 0)
   const tipAmount = parseFloat(tip || customTip || 0)
@@ -370,6 +438,27 @@ function PaymentPanel({ table, staffPicker, currentVenue, onClose, onPaid }) {
           ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}),
         })
       }
+      // Save digital receipt if email captured
+      if (receiptEmail?.includes('@')) {
+        await supabase.from('receipts').insert({
+          table_number: table.tableNumber, email: receiptEmail,
+          items: merged, total, tip: tipAmount, payment_method: method,
+          sent_at: new Date().toISOString(),
+          venue_name: settings?.venue_name,
+          ...(currentVenue?.id ? { venue_id: currentVenue.id } : {}),
+        })
+        // Log to loyalty stamps
+        await supabase.from('loyalty_stamps').upsert({
+          email: receiptEmail,
+          stamp_count: 1,
+          last_stamp: new Date().toISOString(),
+        }, { onConflict: 'email', ignoreDuplicates: false })
+        // Try to increment stamp count
+        const { data: existingStamp } = await supabase.from('loyalty_stamps').select('stamp_count').eq('email', receiptEmail).maybeSingle()
+        if (existingStamp) {
+          await supabase.from('loyalty_stamps').update({ stamp_count: (existingStamp.stamp_count || 0) + 1, last_stamp: new Date().toISOString() }).eq('email', receiptEmail)
+        }
+      }
       if (method === 'cash') await openCashDrawer()
       onPaid()
     } catch (e) {
@@ -377,6 +466,9 @@ function PaymentPanel({ table, staffPicker, currentVenue, onClose, onPaid }) {
       setProcessing(false)
     }
   }
+
+  // Need settings for receipt
+  const { settings } = useApp()
 
   return (
     // Overlay + bottom sheet
@@ -419,6 +511,17 @@ function PaymentPanel({ table, staffPicker, currentVenue, onClose, onPaid }) {
               onPay={handlePayment}
               onVoid={() => setScreen('void')}
               onSplit={() => setScreen('split')}
+              onPaymentLink={() => setScreen('link')}
+              receiptEmail={receiptEmail}
+              setReceiptEmail={setReceiptEmail}
+            />
+          )}
+          {screen === 'link' && (
+            <PaymentLinkScreen
+              table={table}
+              total={total}
+              onBack={() => setScreen('bill')}
+              onPaid={onPaid}
             />
           )}
           {screen === 'void' && (
@@ -445,7 +548,7 @@ function PaymentPanel({ table, staffPicker, currentVenue, onClose, onPaid }) {
   )
 }
 
-function BillScreen({ merged, table, total, tip, setTip, customTip, setCustomTip, grandTotal, tipAmount, staffName, setStaffName, processing, onPay, onVoid, onSplit }) {
+function BillScreen({ merged, table, total, tip, setTip, customTip, setCustomTip, grandTotal, tipAmount, staffName, setStaffName, processing, onPay, onVoid, onSplit, onPaymentLink, receiptEmail, setReceiptEmail }) {
   const allergens = [...new Set(table.orders.flatMap(o => o.allergens || []))]
   const notes = table.orders.filter(o => o.note).map(o => o.note)
 
@@ -542,10 +645,24 @@ function BillScreen({ merged, table, total, tip, setTip, customTip, setCustomTip
       </div>
       {processing && <div className="flex justify-center"><Spinner /></div>}
 
+      {/* Receipt email (optional) */}
+      <div>
+        <label className="font-barlow text-zinc-500 text-xs block mb-1">Send digital receipt (optional)</label>
+        <input
+          type="email"
+          value={receiptEmail}
+          onChange={e => setReceiptEmail(e.target.value)}
+          placeholder="customer@email.com"
+          className="w-full bg-zinc-800 text-white font-barlow text-sm rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-amber-600"
+          maxLength={254}
+        />
+      </div>
+
       {/* Secondary actions */}
-      <div className="grid grid-cols-2 gap-2 pt-1">
-        <button onClick={onVoid} className="py-3 bg-zinc-800 hover:bg-red-900/30 border border-zinc-700 hover:border-red-800 text-zinc-400 hover:text-red-400 font-barlow text-sm rounded-xl transition-colors">Void Item</button>
-        <button onClick={onSplit} className="py-3 bg-zinc-800 hover:bg-blue-900/30 border border-zinc-700 hover:border-blue-800 text-zinc-400 hover:text-blue-400 font-barlow text-sm rounded-xl transition-colors">Split Bill</button>
+      <div className="grid grid-cols-3 gap-2 pt-1">
+        <button onClick={onVoid} className="py-3 bg-zinc-800 hover:bg-red-900/30 border border-zinc-700 hover:border-red-800 text-zinc-400 hover:text-red-400 font-barlow text-xs rounded-xl transition-colors">Void Item</button>
+        <button onClick={onSplit} className="py-3 bg-zinc-800 hover:bg-blue-900/30 border border-zinc-700 hover:border-blue-800 text-zinc-400 hover:text-blue-400 font-barlow text-xs rounded-xl transition-colors">Split Bill</button>
+        <button onClick={onPaymentLink} className="py-3 bg-zinc-800 hover:bg-purple-900/30 border border-zinc-700 hover:border-purple-800 text-zinc-400 hover:text-purple-400 font-barlow text-xs rounded-xl transition-colors">📱 Pay Link</button>
       </div>
     </div>
   )
@@ -598,6 +715,54 @@ function VoidScreen({ table, staffName, currentVenue, onBack, onVoided }) {
       <button onClick={handleVoid} disabled={!selected || saving}
         className="w-full bg-red-700 hover:bg-red-800 disabled:opacity-40 text-white font-oswald text-lg py-4 rounded-2xl transition-colors flex items-center justify-center gap-2">
         {saving ? <Spinner size="sm" color="white" /> : 'Confirm Void'}
+      </button>
+    </div>
+  )
+}
+
+// ─── Payment Link Screen ─────────────────────────────────────────────────
+function PaymentLinkScreen({ table, total, onBack, onPaid }) {
+  const [email, setEmail] = useState('')
+  const [sent, setSent] = useState(false)
+  const [paying, setPaying] = useState(false)
+  // Mock Stripe link — in production, call a Supabase Edge Function to create a Payment Link via Stripe API
+  const mockLink = `https://pay.tabflow.app/t${table.tableNumber}-${Math.random().toString(36).slice(2,7)}`
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(mockLink)}`
+
+  const markPaid = async () => {
+    setPaying(true)
+    try {
+      const orderIds = table.orders.map(o => o.id)
+      await supabase.from('orders').update({ status: 'complete', tab_closed: true, completed_at: new Date().toISOString(), payment_method: 'online' }).in('id', orderIds)
+      await supabase.from('order_items_routed').update({ status: 'complete' }).in('order_id', orderIds)
+      onPaid()
+    } catch (e) { alert(e.message); setPaying(false) }
+  }
+
+  return (
+    <div className="p-5 space-y-4 pb-8">
+      <button onClick={onBack} className="flex items-center gap-2 text-zinc-400 hover:text-white font-barlow text-sm transition-colors">← Back to bill</button>
+      <h3 className="font-oswald text-white text-xl">Payment Link — £{total.toFixed(2)}</h3>
+      <p className="font-barlow text-zinc-400 text-sm">Show this QR code to the customer. They scan and pay on their own phone. No card machine needed.</p>
+
+      <div className="flex justify-center">
+        <div className="bg-white p-3 rounded-2xl">
+          <img src={qrUrl} alt="Payment QR" className="w-48 h-48" />
+        </div>
+      </div>
+
+      <div className="bg-zinc-800 rounded-xl px-4 py-3">
+        <p className="font-barlow text-zinc-500 text-xs mb-1">Payment link</p>
+        <p className="font-mono text-amber-400 text-xs break-all">{mockLink}</p>
+      </div>
+
+      <div className="bg-amber-900/20 border border-amber-700/40 rounded-xl px-4 py-3">
+        <p className="font-barlow text-amber-300 text-xs">Demo mode: This uses a placeholder link. Connect Stripe in Admin → Marketplace to enable real payments. Stripe fees: 1.4% + 20p per transaction.</p>
+      </div>
+
+      <button onClick={markPaid} disabled={paying}
+        className="w-full bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-oswald text-lg py-4 rounded-2xl transition-colors flex items-center justify-center gap-2">
+        {paying ? <Spinner size="sm" color="white" /> : '✓ Confirm Payment Received'}
       </button>
     </div>
   )

@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useApp } from '../../context/AppContext'
 import { verifyPin, hashPin, isLockedOut, lockoutSecondsRemaining, recordFailedAttempt, clearRateLimit } from '../../lib/pin'
+import { lazy, Suspense } from 'react'
+import { SkeletonCard } from '../../components/ui/Skeleton'
 import MenuAdmin from './MenuAdmin'
 import StaffAdmin from './StaffAdmin'
 import TablesAdmin from './TablesAdmin'
@@ -13,15 +15,34 @@ import SettingsAdmin from './SettingsAdmin'
 import VenuesAdmin from './VenuesAdmin'
 import GdprAdmin from './GdprAdmin'
 
+const InsightsAdmin = lazy(() => import('./InsightsAdmin'))
+const ComplianceAdmin = lazy(() => import('./ComplianceAdmin'))
+const LoyaltyAdmin = lazy(() => import('./LoyaltyAdmin'))
+const ReceiptsAdmin = lazy(() => import('./ReceiptsAdmin'))
+const MarketplaceAdmin = lazy(() => import('./MarketplaceAdmin'))
+const HeatmapAdmin = lazy(() => import('./HeatmapAdmin'))
+const WhiteLabelAdmin = lazy(() => import('./WhiteLabelAdmin'))
+
+function TabFallback() {
+  return <div className="p-5 space-y-4"><SkeletonCard rows={4} /><SkeletonCard rows={3} /></div>
+}
+
 const TABS = [
   { key: 'menu', label: '🍽 Menu' },
+  { key: 'heatmap', label: '🌡 Heatmap' },
   { key: 'staff', label: '👥 Staff' },
   { key: 'tables', label: '🪑 Tables' },
   { key: 'orders', label: '📊 Orders' },
+  { key: 'insights', label: '✨ Insights' },
+  { key: 'compliance', label: '⚠️ Allergens' },
+  { key: 'receipts', label: '🧾 Receipts' },
+  { key: 'loyalty', label: '🎟 Loyalty' },
+  { key: 'marketplace', label: '🔗 Marketplace' },
   { key: 'marketing', label: '📣 Marketing' },
   { key: 'eod', label: '🌙 End of Night' },
   { key: 'venues', label: '🏢 Venues' },
   { key: 'gdpr', label: '🔐 GDPR' },
+  { key: 'whitelabel', label: '🎨 White Label' },
   { key: 'settings', label: '⚙️ Settings' },
 ]
 
@@ -236,6 +257,15 @@ export default function AdminPage() {
         {activeTab === 'venues' && <VenuesAdmin />}
         {activeTab === 'gdpr' && <GdprAdmin />}
         {activeTab === 'settings' && <SettingsAdmin />}
+        <Suspense fallback={<TabFallback />}>
+          {activeTab === 'insights' && <InsightsAdmin />}
+          {activeTab === 'compliance' && <ComplianceAdmin />}
+          {activeTab === 'loyalty' && <LoyaltyAdmin />}
+          {activeTab === 'receipts' && <ReceiptsAdmin />}
+          {activeTab === 'marketplace' && <MarketplaceAdmin />}
+          {activeTab === 'heatmap' && <HeatmapAdmin />}
+          {activeTab === 'whitelabel' && <WhiteLabelAdmin />}
+        </Suspense>
       </div>
     </div>
   )

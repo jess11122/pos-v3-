@@ -183,12 +183,37 @@ export default function SettingsAdmin() {
         </button>
       </div>
 
+      {/* Closing time */}
+      <div className="bg-zinc-800 rounded-2xl p-5 space-y-4">
+        <h3 className="font-oswald text-white text-lg">Closing Time</h3>
+        <p className="font-barlow text-zinc-400 text-sm">Shown as countdown on the TV display dashboard.</p>
+        <div>
+          <label className="label">Closing Time</label>
+          <input type="time" defaultValue={settings?.closing_time || '23:00'} id="closingTime" className="input-field w-full" />
+        </div>
+        <button
+          onClick={async () => {
+            const t = document.getElementById('closingTime').value
+            await supabase.from('settings').update({ closing_time: t }).eq('id', settings.id)
+            await refreshSettings()
+          }}
+          className="bg-amber-600 hover:bg-amber-700 text-white font-oswald px-5 py-3 rounded-xl transition-colors"
+        >
+          Save Closing Time
+        </button>
+      </div>
+
       {/* System Info */}
       <div className="bg-zinc-800 rounded-2xl p-5">
         <h3 className="font-oswald text-white text-lg mb-2">System Info</h3>
         <div className="space-y-1">
-          <div className="flex justify-between font-barlow text-sm"><span className="text-zinc-400">Version</span><span className="text-zinc-300">2.0.0</span></div>
+          <div className="flex justify-between font-barlow text-sm"><span className="text-zinc-400">Version</span><span className="text-zinc-300">3.0.0</span></div>
           <div className="flex justify-between font-barlow text-sm"><span className="text-zinc-400">Settings ID</span><span className="text-zinc-500 text-xs">{settings?.id?.slice(0, 8)}…</span></div>
+          <div className="flex justify-between font-barlow text-sm"><span className="text-zinc-400">Display (TV) URL</span><span className="text-zinc-500 text-xs">/display</span></div>
+          <div className="flex justify-between font-barlow text-sm"><span className="text-zinc-400">Group Dashboard</span><span className="text-zinc-500 text-xs">/group</span></div>
+        </div>
+        <div className="mt-4 pt-4 border-t border-zinc-700 text-center">
+          <p className="font-barlow text-zinc-700 text-xs">Powered by TabFlow POS · v3.0.0</p>
         </div>
       </div>
     </div>
