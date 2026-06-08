@@ -20,10 +20,12 @@ export default function FloorMap({ staff, onTableSelect, onLogout }) {
 
   const loadData = useCallback(async () => {
     const today = format(new Date(), 'yyyy-MM-dd')
+    const todayStart = today + 'T00:00:00'
     const [ordersRes, bookingsRes, routedRes] = await Promise.all([
-      supabase.from('orders').select('id,table_number,total,status,tab_closed,staff_name,created_at').eq('tab_closed', false).eq('status', 'pending'),
+      supabase.from('orders').select('id,table_number,total,status,tab_closed,staff_name,created_at').eq('tab_closed', false).eq('status', 'pending').gte('created_at', todayStart),
       supabase.from('bookings').select('table_preference,date,time').eq('date', today).in('status', ['confirmed']),
-      supabase.from('order_items_routed').select('order_id,status,routed_to').in('status', ['ready']),
+      // FIX: filter to today only so stale ready items from previous days don't appear
+      supabase.from('order_items_routed').select('order_id,status,routed_to').eq('status', 'ready').gte('created_at', todayStart),
     ])
 
     const tabs = {}

@@ -10,7 +10,7 @@ import Modal from '../components/ui/Modal'
 import { formatDistanceToNow } from 'date-fns'
 
 export default function BarPage() {
-  const { selectedStaff, saveStaff } = useApp()
+  const { selectedStaff, saveStaff, settings } = useApp()
   const [tab, setTab] = useState('queue')
   const [pendingOrders, setPendingOrders] = useState([])
   const [historyOrders, setHistoryOrders] = useState([])
@@ -19,17 +19,31 @@ export default function BarPage() {
   const [printerConnected, setPrinterConnected] = useState(isPrinterConnected())
   const [walkUpModal, setWalkUpModal] = useState(false)
   const isFirstLoad = useRef(true)
+  const flashTimer = useRef(null) // FIX: track timer for cleanup
+  const mountedRef = useRef(true)
 
-  const { settings } = useApp()
+  // FIX: cleanup on unmount
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      clearTimeout(flashTimer.current)
+    }
+  }, [])
+
+  const todayStart = () => new Date().toISOString().split('T')[0] + 'T00:00:00'
 
   const loadPending = useCallback(async () => {
-    const today = new Date().toISOString().split('T')[0]
+    // FIX: join to orders to filter by today's date — prevents returning stale historical items
     const { data } = await supabase
       .from('order_items_routed')
       .select('*, orders!inner(table_number, staff_name, staff_colour, allergens, created_at, note)')
       .eq('routed_to', 'bar')
       .in('status', ['pending', 'making'])
+      .gte('orders.created_at', todayStart())
       .order('created_at', { foreignTable: 'orders', ascending: true })
+
+    if (!mountedRef.current) return
 
     const grouped = {}
     for (const item of (data || [])) {
@@ -52,33 +66,46 @@ export default function BarPage() {
     }
 
     const orders = Object.values(grouped)
-    setPendingOrders(orders)
-    setLoading(false)
-
-    if (!isFirstLoad.current && orders.length > (pendingOrders.length || 0)) {
-      playPing('bar')
-      setFlashing(true)
-      setTimeout(() => setFlashing(false), 3000)
-    }
+    setPendingOrders(prev => {
+      // FIX: only ping if genuinely new orders arrived
+      if (!isFirstLoad.current && orders.length > prev.length) {
+        playPing('bar')
+        setFlashing(true)
+        // FIX: store timer ref so it can be cleared on unmount
+        clearTimeout(flashTimer.current)
+        flashTimer.current = setTimeout(() => {
+          if (mountedRef.current) setFlashing(false)
+        }, 3000)
+      }
+      return orders
+    })
     isFirstLoad.current = false
+    setLoading(false)
   }, [])
 
   const loadHistory = useCallback(async () => {
-    const today = new Date().toISOString().split('T')[0]
     const { data } = await supabase
       .from('order_items_routed')
       .select('*, orders!inner(table_number, staff_name, created_at)')
       .eq('routed_to', 'bar')
       .eq('status', 'complete')
-      .gte('orders.created_at', today + 'T00:00:00')
+      .gte('orders.created_at', todayStart())
       .order('created_at', { foreignTable: 'orders', ascending: false })
       .limit(100)
+
+    if (!mountedRef.current) return
 
     const grouped = {}
     for (const item of (data || [])) {
       const key = item.order_id
       if (!grouped[key]) {
-        grouped[key] = { order_id: key, table_number: item.orders.table_number, staff_name: item.orders.staff_name, created_at: item.orders.created_at, items: [] }
+        grouped[key] = {
+          order_id: key,
+          table_number: item.orders.table_number,
+          staff_name: item.orders.staff_name,
+          created_at: item.orders.created_at,
+          items: [],
+        }
       }
       grouped[key].items.push(item)
     }
@@ -182,7 +209,6 @@ export default function BarPage() {
         )}
       </div>
 
-      {/* Walk-up order button */}
       <div className="p-4 border-t border-amber-200 bg-[#f5f0e8]">
         <button
           onClick={() => setWalkUpModal(true)}
@@ -215,34 +241,24 @@ function OrderCard({ order, onDone, onMaking, light }) {
           <span className={`font-barlow text-sm ${subClass}`}>{order.staff_name} · {formatDistanceToNow(new Date(order.created_at), { addSuffix: true })}</span>
         </div>
       </div>
-
       {order.allergens?.length > 0 && (
         <div className="bg-red-100 border border-red-300 rounded-xl px-3 py-2 mb-3">
           <p className="font-barlow text-red-700 text-sm font-semibold">⚠ ALLERGENS: {order.allergens.join(', ')}</p>
         </div>
       )}
-
       <div className="space-y-1 mb-4">
         {order.items.map((item, i) => (
-          <div key={i} className={`font-barlow text-base ${titleClass}`}>
-            {item.quantity}× {item.item_name}
-          </div>
+          <div key={i} className={`font-barlow text-base ${titleClass}`}>{item.quantity}× {item.item_name}</div>
         ))}
       </div>
-
       {order.note && (
         <div className={`font-barlow text-sm ${subClass} italic mb-3`}>Note: {order.note}</div>
       )}
-
       <div className="flex gap-2">
         {order.status === 'pending' && (
-          <button onClick={onMaking} className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-oswald py-3 rounded-xl transition-colors">
-            Making
-          </button>
+          <button onClick={onMaking} className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-oswald py-3 rounded-xl transition-colors">Making</button>
         )}
-        <button onClick={onDone} className="flex-1 bg-green-600 hover:bg-green-700 text-white font-oswald py-3 rounded-xl transition-colors">
-          Done ✓
-        </button>
+        <button onClick={onDone} className="flex-1 bg-green-600 hover:bg-green-700 text-white font-oswald py-3 rounded-xl transition-colors">Done ✓</button>
       </div>
     </div>
   )
@@ -282,7 +298,6 @@ function WalkUpModal({ onClose, staff, settings, onDone }) {
         staff_name: staff.name,
         staff_colour: staff.colour,
       }).select().single()
-
       await supabase.from('order_items_routed').insert(
         cart.map(i => ({ order_id: order.id, item_name: i.name, item_type: 'drink', quantity: i.qty, status: 'pending', routed_to: 'bar' }))
       )
@@ -303,9 +318,7 @@ function WalkUpModal({ onClose, staff, settings, onDone }) {
               <div className="flex-1 font-barlow text-white">{item.name}</div>
               <div className="font-barlow text-zinc-300 mr-2">£{item.price.toFixed(2)}</div>
               <div className="flex items-center gap-2">
-                {getQty(item.id) > 0 && (
-                  <button onClick={() => removeItem(item.id)} className="w-8 h-8 bg-zinc-600 rounded-full text-white hover:bg-red-700 flex items-center justify-center">−</button>
-                )}
+                {getQty(item.id) > 0 && <button onClick={() => removeItem(item.id)} className="w-8 h-8 bg-zinc-600 rounded-full text-white hover:bg-red-700 flex items-center justify-center">−</button>}
                 {getQty(item.id) > 0 && <span className="font-oswald text-white w-5 text-center">{getQty(item.id)}</span>}
                 <button onClick={() => addItem(item)} className="w-8 h-8 bg-amber-600 rounded-full text-white hover:bg-amber-700 flex items-center justify-center">+</button>
               </div>
@@ -318,11 +331,7 @@ function WalkUpModal({ onClose, staff, settings, onDone }) {
             <span className="font-oswald text-amber-500">£{total.toFixed(2)}</span>
           </div>
         )}
-        <button
-          onClick={handleSubmit}
-          disabled={cart.length === 0 || submitting}
-          className="w-full bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-oswald text-xl py-4 rounded-xl transition-colors flex items-center justify-center gap-2"
-        >
+        <button onClick={handleSubmit} disabled={cart.length === 0 || submitting} className="w-full bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-oswald text-xl py-4 rounded-xl transition-colors flex items-center justify-center gap-2">
           {submitting ? <Spinner size="sm" color="white" /> : 'Send to Bar Queue'}
         </button>
       </div>

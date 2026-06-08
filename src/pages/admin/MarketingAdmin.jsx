@@ -9,8 +9,12 @@ export default function MarketingAdmin() {
   const [copied, setCopied] = useState(false)
 
   const load = useCallback(async () => {
-    let q = supabase.from('bookings').select('id,name,email,phone,marketing_email,marketing_sms,marketing_phone,created_at').order('created_at', { ascending: false })
-    const { data } = await q
+    // FIX: add limit — marketing list unlikely to exceed 1000, prevents unbounded fetch
+    const { data } = await supabase
+      .from('bookings')
+      .select('id,name,email,phone,marketing_email,marketing_sms,marketing_phone,created_at')
+      .order('created_at', { ascending: false })
+      .limit(1000)
     setContacts(data || [])
     setLoading(false)
   }, [])

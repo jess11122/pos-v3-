@@ -16,15 +16,38 @@ export default function KitchenPage() {
   const [loading, setLoading] = useState(true)
   const [flashing, setFlashing] = useState(false)
   const [printerConnected, setPrinterConnected] = useState(isPrinterConnected())
+  // FIX: tick every 60s so ticket ages refresh on screen
+  const [tick, setTick] = useState(0)
   const prevCountRef = useRef(0)
+  const flashTimer = useRef(null) // FIX: track for cleanup
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    // FIX: refresh ticket ages every minute
+    const ageClock = setInterval(() => {
+      if (mountedRef.current) setTick(t => t + 1)
+    }, 60000)
+    return () => {
+      mountedRef.current = false
+      clearTimeout(flashTimer.current)
+      clearInterval(ageClock)
+    }
+  }, [])
+
+  const todayStart = () => new Date().toISOString().split('T')[0] + 'T00:00:00'
 
   const loadPending = useCallback(async () => {
+    // FIX: filter to today only — prevents returning days-old items
     const { data } = await supabase
       .from('order_items_routed')
       .select('*, orders!inner(table_number, staff_name, staff_colour, allergens, note, created_at)')
       .eq('routed_to', 'kitchen')
       .in('status', ['pending', 'making'])
+      .gte('orders.created_at', todayStart())
       .order('created_at', { foreignTable: 'orders', ascending: true })
+
+    if (!mountedRef.current) return
 
     const grouped = {}
     for (const item of (data || [])) {
@@ -50,7 +73,11 @@ export default function KitchenPage() {
     if (newCount > prevCountRef.current) {
       playPing('kitchen')
       setFlashing(true)
-      setTimeout(() => setFlashing(false), 3000)
+      // FIX: store ref + guard against unmount
+      clearTimeout(flashTimer.current)
+      flashTimer.current = setTimeout(() => {
+        if (mountedRef.current) setFlashing(false)
+      }, 3000)
     }
     prevCountRef.current = newCount
     setPendingOrders(orders)
@@ -58,21 +85,30 @@ export default function KitchenPage() {
   }, [])
 
   const loadHistory = useCallback(async () => {
-    const today = new Date().toISOString().split('T')[0]
     const { data } = await supabase
       .from('order_items_routed')
       .select('*, orders!inner(table_number, staff_name, created_at, allergens)')
       .eq('routed_to', 'kitchen')
       .in('status', ['ready', 'complete'])
-      .gte('orders.created_at', today + 'T00:00:00')
+      .gte('orders.created_at', todayStart())
       .order('created_at', { foreignTable: 'orders', ascending: false })
       .limit(100)
+
+    if (!mountedRef.current) return
 
     const grouped = {}
     for (const item of (data || [])) {
       const key = item.order_id
       if (!grouped[key]) {
-        grouped[key] = { order_id: key, table_number: item.orders.table_number, staff_name: item.orders.staff_name, created_at: item.orders.created_at, allergens: item.orders.allergens || [], items: [], status: item.status }
+        grouped[key] = {
+          order_id: key,
+          table_number: item.orders.table_number,
+          staff_name: item.orders.staff_name,
+          created_at: item.orders.created_at,
+          allergens: item.orders.allergens || [],
+          items: [],
+          status: item.status,
+        }
       }
       grouped[key].items.push(item)
     }
@@ -122,11 +158,7 @@ export default function KitchenPage() {
 
       <div className="flex border-b border-zinc-800 bg-[#111]">
         {[['queue', `Queue (${pendingOrders.length})`], ['history', 'History']].map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`flex-1 py-3 font-oswald text-lg transition-colors ${tab === key ? 'text-green-400 border-b-2 border-green-500' : 'text-zinc-500 hover:text-zinc-300'}`}
-          >
+          <button key={key} onClick={() => setTab(key)} className={`flex-1 py-3 font-oswald text-lg transition-colors ${tab === key ? 'text-green-400 border-b-2 border-green-500' : 'text-zinc-500 hover:text-zinc-300'}`}>
             {label}
           </button>
         ))}
@@ -143,8 +175,9 @@ export default function KitchenPage() {
             </div>
           ) : (
             <div className="space-y-4 max-w-2xl mx-auto">
+              {/* FIX: pass tick so cards re-render with fresh age every minute */}
               {pendingOrders.map(order => (
-                <KitchenCard key={order.order_id} order={order} onMaking={() => markMaking(order.order_id)} onReady={() => markReady(order.order_id)} />
+                <KitchenCard key={order.order_id} order={order} tick={tick} onMaking={() => markMaking(order.order_id)} onReady={() => markReady(order.order_id)} />
               ))}
             </div>
           )
@@ -180,7 +213,8 @@ export default function KitchenPage() {
   )
 }
 
-function KitchenCard({ order, onMaking, onReady }) {
+// FIX: tick prop forces re-render each minute so age stays current
+function KitchenCard({ order, onMaking, onReady, tick: _tick }) {
   const age = Math.floor((Date.now() - new Date(order.created_at)) / 60000)
   const isUrgent = age > 15
 
@@ -201,34 +235,22 @@ function KitchenCard({ order, onMaking, onReady }) {
           <div className="text-xs">{isUrgent ? '⚠ LATE' : 'ago'}</div>
         </div>
       </div>
-
       {order.allergens?.length > 0 && (
         <div className="bg-red-900/60 border border-red-700 rounded-xl px-3 py-2 mb-3">
           <p className="font-barlow text-red-300 text-sm font-bold">🚨 ALLERGENS: {order.allergens.join(', ')}</p>
         </div>
       )}
-
       <div className="space-y-1 mb-4">
         {order.items.map((item, i) => (
-          <div key={i} className="font-barlow text-white text-lg">
-            {item.quantity}× {item.item_name}
-          </div>
+          <div key={i} className="font-barlow text-white text-lg">{item.quantity}× {item.item_name}</div>
         ))}
       </div>
-
-      {order.note && (
-        <div className="font-barlow text-amber-400 text-sm italic mb-3">📝 {order.note}</div>
-      )}
-
+      {order.note && <div className="font-barlow text-amber-400 text-sm italic mb-3">📝 {order.note}</div>}
       <div className="flex gap-2">
         {order.overallStatus === 'pending' && (
-          <button onClick={onMaking} className="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-oswald py-3 rounded-xl transition-colors text-lg">
-            Making
-          </button>
+          <button onClick={onMaking} className="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-oswald py-3 rounded-xl transition-colors text-lg">Making</button>
         )}
-        <button onClick={onReady} className="flex-1 bg-green-600 hover:bg-green-700 text-white font-oswald py-3 rounded-xl transition-colors text-lg">
-          Ready ✓
-        </button>
+        <button onClick={onReady} className="flex-1 bg-green-600 hover:bg-green-700 text-white font-oswald py-3 rounded-xl transition-colors text-lg">Ready ✓</button>
       </div>
     </div>
   )

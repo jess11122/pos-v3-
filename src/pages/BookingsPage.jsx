@@ -21,8 +21,13 @@ export default function BookingsPage() {
   const today = format(new Date(), 'yyyy-MM-dd')
 
   const loadBookings = useCallback(async () => {
+    // FIX: always scope queries — today tab = exact date, all tab = limit 200 to prevent unbounded fetch
     let q = supabase.from('bookings').select('*').order('date').order('time')
-    if (tab === 'today') q = q.eq('date', today)
+    if (tab === 'today') {
+      q = q.eq('date', today)
+    } else {
+      q = q.limit(200)
+    }
     const { data } = await q
     setBookings(data || [])
     setLoading(false)
